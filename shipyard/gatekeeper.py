@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .audit import AuditLog
-from .policy import Decision, Policy, Tier, Verdict, evaluate, may_approve
+from .policy import Decision, Policy, Role, Tier, Verdict, evaluate, may_approve
 
 APPROVALS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS approvals (
@@ -156,6 +156,10 @@ class Gatekeeper:
             self.audit.write(project=project, actor=approver, event="approval_rejected", action=r["action"],
                              target=r["target"], approval_id=approval_id, reason="approver not authorized")
             return Outcome("denied", "approver not authorized")
+        if r["args"].get("gate") and self.policy.members.get(project, {}).get(approver) is not Role.OWNER:
+            self.audit.write(project=project, actor=approver, event="approval_rejected", action=r["action"],
+                             target=r["target"], approval_id=approval_id, reason="only an owner can override a security block")
+            return Outcome("denied", "only an owner can override a security block")
 
         # Single use: only the first writer flips pending -> approved.
         with self.lock:

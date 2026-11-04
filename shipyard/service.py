@@ -21,6 +21,7 @@ from .github import GitHubError
 from .hostshell import ShellError
 from .kube import KubeError
 from .policy import Verdict, evaluate
+from .sbom import _t, gate_reasons, rebase, summary as sbom_summary
 from .shellrules import Refused, check_host, check_pod
 
 # commands that act on an app: the action depends on the app's backend
@@ -44,6 +45,7 @@ ACTION_FOR_VERB = {
     "restart": "coolify.restart",
     "rollback": "coolify.rollback",
     "audit": "audit.read",
+    "sbom": "sbom.read",
 }
 # "@switch-<platform>-<bridge uuid>-<account name>:<server>" -> the account name
 _SENDER = re.compile(r"^@switch-[a-z]+-[0-9a-f-]{36}-(?P<name>.+):[^:]+$")
@@ -54,9 +56,10 @@ CACHE_LIMIT = 500
 class Service:
     def __init__(self, cfg: Config, gk: Gatekeeper, coolify: Any, post: Callable[[str, str], None],
                  agent_name: str = "gatekeeper", now: Callable[[], float] = time.time, github: Any = None,
-                 kube: Any = None, hostshell: Any = None):
+                 kube: Any = None, hostshell: Any = None, sbom: Any = None):
         self.cfg, self.gk, self.coolify, self.post, self.github = cfg, gk, coolify, post, github
         self.kube, self.hostshell = kube, hostshell
+        self.sbom = sbom                       # an SbomCollector, or None when the SBOM gate is not configured
         self.agent_name = agent_name
         self.now = now
         self.names: dict[str, str] = {}
@@ -138,6 +141,8 @@ class Service:
             return self._status(project, room, sender, cmd)
         if cmd.verb in ("prs", "pr", "digest"):
             return self._repo_read(project, room, sender, cmd)
+        if cmd.verb == "sbom":
+            return self._sbom(project, room, sender, cmd)
         if cmd.verb in ("logs", "events"):
             return self._read_ops(project, room, sender, cmd)
         if cmd.verb in ("shell", "exec"):
@@ -252,6 +257,63 @@ class Service:
         except GitHubError as exc:
             return f"Could not reach GitHub: {exc}"
 
+    # -- the SBOM gate --------------------------------------------------------
+
+    def _gated_app(self, project: Project, app: str) -> bool:
+        """Is a forward deploy of `app` judged by the SBOM gate? Only the repository-backed app, and only when configured."""
+        return self.sbom is not None and project.repo is not None and project.repo.app == app and self.github is not None
+
+    def _gate(self, project: Project, commit: str, pr: int | None = None, ref: str = "") -> tuple[list[str], dict[str, Any] | None]:
+        """(reasons, report): why this commit may not be deployed without an owner, judged against what is deployed now.
+        Raises GitHubError when we cannot find out; callers then refuse, never assume."""
+        report = self.sbom.collect(project, commit, pr, ref)
+        if report is not None:
+            report = rebase(report, self.sbom.store.baseline(project.name, project.repo.app))
+        return gate_reasons(report), report
+
+    @staticmethod
+    def _gate_ids(report: dict[str, Any] | None) -> list[str]:
+        """What the approval is pinned to and the audit records: the new critical CVE ids, or the reason class."""
+        if report is None or report["decision"] == "no_sbom":
+            return ["no-sbom"]
+        if report["decision"] == "unverified":
+            return ["unverified-sbom"]
+        return sorted({f["id"] for f in report["blocking"]})[:10]
+
+    def _gate_note(self, project: Project, actor: str, sender_name: str, action: str, target: str, reasons: list[str],
+                   ids: list[str], commit: str) -> None:
+        self.gk.audit.write(project=project.name, actor=actor, event="gate_blocked", action=action, target=target,
+                            reason=reasons[0][:300], cves=ids, commit=commit[:12], name=sender_name)
+
+    def _sbom(self, project: Project, room: str, sender: str, cmd: Command) -> str:
+        target = cmd.args[0] if cmd.args else project.name
+        if not self._is_member(project, sender):
+            return self._deny(project, sender, "sbom.read", target, "you are not a member of this project")
+        out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action="sbom.read", target=target,
+                                     room_id=room, name=self._name(sender))
+        if out.status != "allowed":
+            return f"Denied: {out.reason}."
+        if self.sbom is None or project.repo is None:
+            return "SBOM reports are not set up for this project."
+        store = self.sbom.store
+        try:
+            if not cmd.args:
+                report = store.latest()
+            elif target.isdigit():
+                report = store.latest(pr=int(target))
+                if report is None and self.github is not None:
+                    pr = self.github.pr(project.repo.name, int(target))
+                    report = self.sbom.collect(project, pr.head_sha, pr.number, f"PR #{pr.number}")
+            else:
+                full = store.resolve(target.lower())
+                report = store.get(full) if full else None
+        except GitHubError as exc:
+            return f"There is no pull request #{target}." if "404" in str(exc) else f"Could not reach GitHub: {exc}"
+        if report is None:
+            return "No SBOM report is stored for that yet. CI produces one when it finishes."
+        label = f"PR #{report['pr']}" if report.get("pr") else report.get("ref") or None
+        return sbom_summary(rebase(report, store.baseline(project.name, project.repo.app)), label)
+
     def _merge_blockers(self, project: Project, number: int):
         """(pr, reason). A reason means: do not merge. Used when asked, and again after approval."""
         pr = self.github.pr(project.repo.name, number)
@@ -292,20 +354,40 @@ class Service:
             return self._deny(project, sender, "repo.merge", target, why, name=self._name(sender))
         if reason:
             return self._deny(project, sender, "repo.merge", target, reason, name=self._name(sender))
+        args: dict[str, Any] = {"sha": pr.head_sha}
+        gated: list[str] = []
+        if project.repo.app and self._gated_app(project, project.repo.app):
+            try:
+                gated, report = self._gate(project, pr.head_sha, pr.number, f"PR #{pr.number}")
+            except GitHubError as exc:
+                return self._deny(project, sender, "repo.merge", target, f"the SBOM gate could not be checked ({exc})",
+                                  name=self._name(sender))
+            if gated:
+                args["gate"] = self._gate_ids(report)
+                self._gate_note(project, sender, self._name(sender), "repo.merge", target, gated, args["gate"], pr.head_sha)
         out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action="repo.merge", target=target,
-                                     args={"sha": pr.head_sha}, room_id=room, name=self._name(sender))
+                                     args=args, room_id=room, name=self._name(sender), force_approval=bool(gated))
         if out.status == "denied":
             return f"Denied: {out.reason}."
-        return self._prompt(out.approval_id, "repo.merge", target, {}, self._name(sender),
-                            extra=f" ({pr.title!r}, CI green, head {pr.head_sha[:7]})")
+        return self._prompt(out.approval_id, "repo.merge", target, args, self._name(sender),
+                            extra=f" ({pr.title!r}, CI green, head {pr.head_sha[:7]})", gate=gated)
 
-    def _run_merge(self, project: Project, actor: str, number: int, sha: str, approved_by: str | None) -> str:
+    def _run_merge(self, project: Project, actor: str, number: int, sha: str, approved_by: str | None,
+                   gate_ids: list[str] | None = None) -> str:
         """Merge after approval: check everything again, merge pinned to the approved commit, then deploy."""
         repo, who = project.repo, self._name(actor)
         try:
             pr, reason = self._merge_blockers(project, number)
             if reason is None and pr.head_sha != sha:
                 reason = "the branch changed after approval was requested; ask again"
+            if reason is None and repo.app and self._gated_app(project, repo.app):
+                now_blocked, report = self._gate(project, sha, number, f"PR #{number}")
+                if now_blocked and not gate_ids:
+                    reason = "the SBOM gate now blocks it (" + now_blocked[0][:200] + "); ask again"
+                elif now_blocked:
+                    self.gk.audit.write(project=project.name, actor=approved_by or actor, event="gate_override", action="repo.merge",
+                                        target=str(number), cves=gate_ids, commit=sha[:12], requester=actor,
+                                        name=self._name(approved_by or actor))
             if reason:
                 self.gk.audit.write(project=project.name, actor=actor, event="failed", action="repo.merge", target=str(number),
                                     error=reason, name=who, approved_by=approved_by)
@@ -325,6 +407,8 @@ class Service:
                 self.gk.audit.write(project=project.name, actor=actor, event="executed", action="coolify.deploy", target=repo.app,
                                     result=result[:120], name=who, via="merge")
                 text += f" Deploy of {repo.app} queued."
+                if self.sbom is not None:
+                    self.sbom.store.record_release(project.name, repo.app, merged, sha)
             except CoolifyError as exc:
                 self.gk.audit.write(project=project.name, actor=actor, event="failed", action="coolify.deploy", target=repo.app,
                                     error=str(exc), name=who, via="merge")
@@ -351,13 +435,50 @@ class Service:
         refusal = self._guard(project, sender, action, target)
         if refusal:
             return refusal
+        gated: list[str] = []
+        if action == "coolify.deploy" and self._gated_app(project, target):
+            d = evaluate(self.cfg.policy, project=project.name, identity=sender, is_human=True, action=action, target=target, args=args)
+            if d.verdict is Verdict.DENY:                      # the role is checked first, so others learn nothing about the SBOM
+                return self._deny(project, sender, action, target, d.reason, name=self._name(sender))
+            try:
+                args, gated = self._deploy_args(project, sender, action, target, args)
+            except GitHubError as exc:
+                return self._deny(project, sender, action, target, f"the SBOM gate could not be checked ({exc})", name=self._name(sender))
         out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action=action, target=target,
-                                     args=args, room_id=room, name=self._name(sender))
+                                     args=args, room_id=room, name=self._name(sender), force_approval=bool(gated))
         if out.status == "denied":
             return f"Denied: {out.reason}."
         if out.status == "awaiting_approval":
-            return self._prompt(out.approval_id, action, target, args, self._name(sender))
+            return self._prompt(out.approval_id, action, target, args, self._name(sender), gate=gated)
         return self._run(project, sender, action, target, args)
+
+    def _deploy_args(self, project: Project, actor: str, action: str, target: str, args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        """Pin a deploy of the repository app to the branch head, and say what the SBOM gate thinks of that commit."""
+        repo = project.repo
+        head = self.github.branch_head(repo.name, repo.branch)
+        reasons, report = self._gate(project, head, None, repo.branch)
+        args = {**args, "sha": head}
+        if reasons:
+            args["gate"] = self._gate_ids(report)
+            self._gate_note(project, actor, self._name(actor), action, target, reasons, args["gate"], head)
+        return args, reasons
+
+    def _recheck_deploy(self, project: Project, r: dict[str, Any], approver: str) -> str | None:
+        """Just before an approved deploy runs: is the branch still what was approved, and is the gate still what it was?"""
+        repo, args = project.repo, r["args"]
+        try:
+            head = self.github.branch_head(repo.name, repo.branch)
+            reasons, _ = self._gate(project, head, None, repo.branch)
+        except GitHubError as exc:
+            return f"Not deployed: the SBOM gate could not be checked ({exc}). Nothing was changed."
+        if head != args.get("sha"):
+            return "Not deployed: the branch changed after approval was requested; ask again. Nothing was changed."
+        if reasons and not args.get("gate"):
+            return f"Not deployed: the SBOM gate now blocks it ({reasons[0][:200]}); ask again. Nothing was changed."
+        if reasons:
+            self.gk.audit.write(project=project.name, actor=approver, event="gate_override", action=r["action"], target=r["target"],
+                                cves=args["gate"], commit=head[:12], requester=r["requester"], name=self._name(approver))
+        return None
 
     def _shell_exec(self, project: Project, room: str, sender: str, cmd: Command) -> str:
         """`shell <host> <command>` and `exec <app> <command>`: owner only, always approved, allowlisted twice."""
@@ -389,7 +510,7 @@ class Service:
         return self._run(project, sender, action, target, args)
 
     def _prompt(self, approval_id: str | None, action: str, target: str, args: dict, who: str, agent: str | None = None,
-                extra: str = "") -> str:
+                extra: str = "", gate: list[str] | None = None) -> str:
         minutes = self.cfg.policy.approval_timeout_seconds // 60
         verb = action.split(".", 1)[1]
         what = f"{verb} {'PR #' if verb == 'merge' else ''}{target}" + (f" {args['tag']}" if args.get("tag") else "")
@@ -399,6 +520,9 @@ class Service:
             what += f" {args['replicas']}"
         what += extra
         by = f"{agent} proposes, for {who}" if agent else f"requested by {who}"
+        if gate:
+            return (f"BLOCKED by the SBOM gate (id {approval_id}): {what}, {by}. {_t(gate[0], 300)}. Only an owner can override: "
+                    f"`@gatekeeper approve {approval_id}`. `@gatekeeper deny {approval_id}` cancels. It expires in {minutes} minutes.")
         return (f"Approval needed (id {approval_id}): {what}, {by}. An owner, or another maintainer, can reply "
                 f"`@gatekeeper approve {approval_id}`. `@gatekeeper deny {approval_id}` cancels. It expires in {minutes} minutes.")
 
@@ -414,7 +538,13 @@ class Service:
             return f"Denied: {out.reason}."
         r = out.request or {}
         if r["action"] == "repo.merge":
-            return self._run_merge(project, r["requester"], int(r["target"]), r["args"].get("sha", ""), sender)
+            return self._run_merge(project, r["requester"], int(r["target"]), r["args"].get("sha", ""), sender,
+                                   gate_ids=r["args"].get("gate"))
+        if r["action"] == "coolify.deploy" and self._gated_app(project, r["target"]):
+            if (refusal := self._recheck_deploy(project, r, sender)):
+                self.gk.audit.write(project=project.name, actor=r["requester"], event="failed", action=r["action"], target=r["target"],
+                                    error=refusal[:200], name=self._name(r["requester"]), approved_by=sender)
+                return refusal
         return self._run(project, r["requester"], r["action"], r["target"], r["args"], approved_by=sender)
 
     # -- execution ------------------------------------------------------------
@@ -472,6 +602,8 @@ class Service:
         shown = clean_lines(lines, self.cfg.alerts.evidence_lines) if lines is not None else None
         self.gk.audit.write(project=project.name, actor=actor, event="executed", action=action, target=target,
                             result=(result or f"{len(shown or [])} lines")[:120], name=who, approved_by=approved_by)
+        if action == "coolify.deploy" and args.get("sha") and self._gated_app(project, target):
+            self.sbom.store.record_release(project.name, target, args["sha"])
         if shown is not None:                                  # command output is evidence: redacted, defused, fenced
             cmd = f" {' '.join(args['argv'])}" if args.get("argv") else ""
             by = f", approved by {self._name(approved_by)}" if approved_by else ""
@@ -488,6 +620,7 @@ class Service:
         """An agent asks to act for the person who sent `message_id`. Anything beyond a
         read waits for a fresh human approval in chat."""
         args = dict(args or {})
+        args.pop("gate", None)             # only the Gatekeeper decides what is gated
         who = f"agent:{agent}"
         read_repo = action in ("repo.pr_list", "repo.pr_status")
         if not (action.startswith("coolify.") or read_repo):
@@ -524,6 +657,12 @@ class Service:
             return {"status": "denied" if text.startswith("Denied") else "done", "result": text}
         if target not in project.apps:
             return {"status": "denied", "reason": f"unknown app {target!r}"}
+        gated: list[str] = []
+        if action == "coolify.deploy" and self._gated_app(project, target):
+            try:
+                args, gated = self._deploy_args(project, requester, action, target, args)
+            except GitHubError as exc:
+                return {"status": "denied", "reason": f"the SBOM gate could not be checked ({exc})"}
         out = self.gk.request_action(project=project.name, identity=requester, is_human=True, action=action,
                                      target=target, args=args, room_id=room, kind="agent_proposal",
                                      force_approval=True, via=agent, message_id=message_id, name=name)
@@ -531,7 +670,7 @@ class Service:
             self.post(room, f"Denied: {out.reason} ({agent} asked to {action.split('.')[-1]} {target} for {name}).")
             return {"status": "denied", "reason": out.reason}
         if out.status == "awaiting_approval":
-            self.post(room, self._prompt(out.approval_id, action, target, args, name, agent=agent))
+            self.post(room, self._prompt(out.approval_id, action, target, args, name, agent=agent, gate=gated))
             return {"status": "awaiting_human_approval", "approval_id": out.approval_id,
                     "message": "A person must approve this in chat. Tell them the id; do not retry."}
         result = self._run(project, requester, action, target, args)

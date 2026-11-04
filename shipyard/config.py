@@ -18,6 +18,7 @@ class RepoCfg:
     app: str | None = None             # Coolify app (a key of Project.apps) deployed after a merge
     required_checks: tuple[str, ...] = ("test",)
     merge_method: str = "squash"
+    branch: str = "main"               # the branch whose head is what "deploy" ships
 
 
 _K8S_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
@@ -76,6 +77,22 @@ class GithubCfg:
 
 
 @dataclass(frozen=True)
+class SbomCfg:
+    workflow: str = ".github/workflows/ci.yml"     # the only workflow whose artifacts we believe
+    data_dir: str = "~/shipyard-sbom"
+    poll_seconds: int = 90
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class DashboardCfg:
+    bind: str = "127.0.0.1"
+    port: int = 8780
+    session_hours: float = 8.0
+    members_file: str = "~/shipyard-members.json"   # role overlay the dashboard edits
+
+
+@dataclass(frozen=True)
 class AlertCfg:
     secret_file: str = "~/gatekeeper-webhook.secret"
     bind: str = "0.0.0.0"
@@ -106,6 +123,8 @@ class Config:
     github: GithubCfg = GithubCfg()
     alerts: AlertCfg = AlertCfg()
     digest: DigestCfg = DigestCfg()
+    sbom: SbomCfg = SbomCfg()
+    dashboard: DashboardCfg = DashboardCfg()
     hosts: dict[str, HostCfg] = field(default_factory=dict)
     kube: KubeCfg | None = None
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
@@ -184,7 +203,7 @@ def load_config(path: str | Path) -> Config:
                 raise ValueError(f"repo.app {r['app']!r} is not one of the project's apps")
             repo = RepoCfg(name=str(r["name"]), app=r.get("app"),
                            required_checks=tuple(r.get("required_checks", ["test"])),
-                           merge_method=r.get("merge_method", "squash"))
+                           merge_method=r.get("merge_method", "squash"), branch=str(r.get("branch", "main")))
             if repo.merge_method not in ("merge", "squash", "rebase"):
                 raise ValueError("merge_method must be merge, squash or rebase")
         projects[name] = Project(name, ops, maint, apps, repo,
@@ -204,6 +223,7 @@ def load_config(path: str | Path) -> Config:
             raise ValueError("Kubernetes apps need a `kubernetes:` block with kubeconfigs")
     switch, coolify, gk = raw.get("switch") or {}, raw.get("coolify") or {}, raw.get("gatekeeper") or {}
     gh, al, dg = raw.get("github") or {}, raw.get("alerts") or {}, raw.get("digest") or {}
+    sb, dash = raw.get("sbom") or {}, raw.get("dashboard") or {}
     return Config(
         policy=_policy(raw),
         projects=projects,
@@ -221,6 +241,10 @@ def load_config(path: str | Path) -> Config:
         alerts=AlertCfg(al.get("secret_file", "~/gatekeeper-webhook.secret"), al.get("bind", "0.0.0.0"),
                         int(al.get("port", 8766)), int(al.get("evidence_lines", 40)), al.get("agent", "ops-agent")),
         digest=DigestCfg(int(dg.get("hour", 9)), int(dg.get("minute", 0)), dg.get("timezone", "Asia/Kolkata")),
+        sbom=SbomCfg(str(sb.get("workflow", ".github/workflows/ci.yml")), sb.get("data_dir", "~/shipyard-sbom"),
+                     int(sb.get("poll_seconds", 90)), bool(sb.get("enabled", True))),
+        dashboard=DashboardCfg(str(dash.get("bind", "127.0.0.1")), int(dash.get("port", 8780)),
+                               float(dash.get("session_hours", 8)), dash.get("members_file", "~/shipyard-members.json")),
         hosts=hosts,
         kube=kube,
         raw=raw,

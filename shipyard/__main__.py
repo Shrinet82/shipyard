@@ -23,6 +23,8 @@ from .github import GitHubApp, GitHubError
 from .kube import Kube
 from .mcp_server import serve
 from .prwatch import PrWatcher
+from .sbomstore import SbomStore
+from .sbomwatch import SbomCollector
 from .service import Service
 from .switch_client import SwitchClient
 
@@ -80,8 +82,13 @@ def run(config_path: str) -> None:
                 cfg.kube.timeout) if cfg.kube else None
     hostshell = HostShell({n: {"ssh": h.ssh, "key_file": expand(h.key_file), "port": h.port} for n, h in cfg.hosts.items()}) \
         if cfg.hosts else None
+    collector = None
+    if github and cfg.sbom.enabled and any(p.repo for p in cfg.projects.values()):
+        collector = SbomCollector(cfg, gk, github, SbomStore(expand(cfg.sbom.data_dir), db, gk.lock), switch.post)
+    else:
+        log.warning("SBOM reports and the deploy gate are off (they need GitHub and sbom.enabled)")
     service = Service(cfg, gk, coolify, switch.post, agent_name=creds.get("name", "gatekeeper"), github=github,
-                      kube=kube, hostshell=hostshell)
+                      kube=kube, hostshell=hostshell, sbom=collector)
     serve(service, cfg.mcp_port, open(expand(cfg.mcp_token_file)).read().strip())
     webhook.serve(_webhook_secret(cfg), service.on_coolify_event, cfg.alerts.bind, cfg.alerts.port)
 
@@ -93,8 +100,11 @@ def run(config_path: str) -> None:
         threading.Thread(target=_loop, args=(stop, cfg.github.poll_seconds, watcher.poll_once, "PR poll"), daemon=True).start()
         threading.Thread(target=_loop, args=(stop, 30, digest.tick, "digest"), daemon=True).start()
         threading.Thread(target=watcher.poll_once, daemon=True).start()
-    log.info("Gatekeeper up: %d project(s), GitHub %s, Kubernetes %s, %d host(s)", len(cfg.projects),
-             "on" if github else "off", "on" if kube else "off", len(cfg.hosts))
+    if collector:
+        threading.Thread(target=_loop, args=(stop, cfg.sbom.poll_seconds, collector.poll_once, "SBOM poll"), daemon=True).start()
+        threading.Thread(target=collector.poll_once, daemon=True).start()
+    log.info("Gatekeeper up: %d project(s), GitHub %s, SBOM gate %s, Kubernetes %s, %d host(s)", len(cfg.projects),
+             "on" if github else "off", "on" if collector else "off", "on" if kube else "off", len(cfg.hosts))
     for ev in switch.events():
         try:
             service.handle_event(ev)

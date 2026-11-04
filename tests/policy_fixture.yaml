@@ -11,6 +11,7 @@ actions:
   coolify.status:    read
   coolify.logs:      read
   audit.read:        read
+  sbom.read:         read
   coolify.deploy:    change
   coolify.restart:   change
   coolify.rollback:  change

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 API = "https://api.github.com"
+MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 
 
 class GitHubError(Exception):
@@ -78,11 +79,41 @@ def sign_with_openssl(key_file: str, message: bytes) -> bytes:
     return p.stdout
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):          # we follow redirects ourselves, without our credentials
+        return None
+
+
+def _download_urllib(url: str, headers: dict[str, str], max_bytes: int) -> bytes:
+    """GET a file. A redirect (artifacts are served from storage) is followed WITHOUT the Authorization header."""
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        resp = opener.open(urllib.request.Request(url, headers=headers), timeout=60)
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (301, 302, 303, 307, 308):
+            raise GitHubError(f"GitHub answered {exc.code} for the download") from exc
+        location = exc.headers.get("Location", "")
+        if not location.startswith("https://"):
+            raise GitHubError("the download redirected somewhere that is not https") from exc
+        try:
+            resp = urllib.request.urlopen(urllib.request.Request(location), timeout=60)
+        except (urllib.error.URLError, OSError) as exc2:
+            raise GitHubError(f"could not fetch the artifact: {exc2}") from exc2
+    except (urllib.error.URLError, OSError) as exc:
+        raise GitHubError(f"GitHub unreachable: {exc}") from exc
+    data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise GitHubError("the artifact is larger than the allowed size")
+    return data
+
+
 class GitHubApp:
     def __init__(self, app_id: str, key_file: str, installation_id: str = "", now: Callable[[], float] = time.time,
-                 http: Callable[..., tuple[int, Any]] | None = None, sign: Callable[[bytes], bytes] | None = None):
+                 http: Callable[..., tuple[int, Any]] | None = None, sign: Callable[[bytes], bytes] | None = None,
+                 download: Callable[[str, dict[str, str], int], bytes] | None = None):
         self.app_id, self.key_file, self.installation_id, self.now = app_id, key_file, installation_id, now
         self._http = http or self._urllib
+        self._download = download or _download_urllib
         self._sign = sign or (lambda m: sign_with_openssl(key_file, m))
         self._token: tuple[str, float] | None = None
 
@@ -164,6 +195,35 @@ class GitHubApp:
                 return []
             raise
         return [r for r in rows if "pull_request" not in r]
+
+    # -- CI artifacts, files, branches, limits -------------------------------------
+
+    def workflow_runs(self, repo: str, sha: str) -> list[dict[str, Any]]:
+        data = self._call("GET", f"/repos/{repo}/actions/runs?head_sha={sha}&per_page=20")
+        return data.get("workflow_runs", [])
+
+    def run_artifacts(self, repo: str, run_id: int) -> list[dict[str, Any]]:
+        return self._call("GET", f"/repos/{repo}/actions/runs/{int(run_id)}/artifacts?per_page=50").get("artifacts", [])
+
+    def download_artifact(self, repo: str, artifact_id: int, max_bytes: int = MAX_ARTIFACT_BYTES) -> bytes:
+        headers = {"Authorization": f"Bearer {self._installation_token()}", "Accept": "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28"}
+        return self._download(f"{API}/repos/{repo}/actions/artifacts/{int(artifact_id)}/zip", headers, max_bytes)
+
+    def pr_files(self, repo: str, number: int) -> list[str]:
+        names: list[str] = []
+        for page in (1, 2, 3):
+            rows = self._call("GET", f"/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
+            names += [r["filename"] for r in rows]
+            if len(rows) < 100:
+                break
+        return names
+
+    def branch_head(self, repo: str, branch: str) -> str:
+        return self._call("GET", f"/repos/{repo}/branches/{branch}")["commit"]["sha"]
+
+    def rate_limit(self) -> dict[str, Any]:
+        return self._call("GET", "/rate_limit")["resources"]["core"]
 
     def merge(self, repo: str, number: int, sha: str, method: str = "squash") -> str:
         """Merge only if the head is still `sha`; GitHub refuses (409) if the branch moved."""

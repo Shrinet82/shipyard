@@ -45,8 +45,9 @@ projects:
     repo:
       name: owner/repo
       app: demo-web                           # deployed after a merge
-      required_checks: [test]                 # CI is green only when these succeed
+      required_checks: [test, sbom]           # CI is green only when these succeed
       merge_method: squash
+      branch: main                            # the branch whose head `deploy` ships and the SBOM gate judges
     github_logins:                            # who is who on GitHub, for the digest
       "@switch-discord-BRIDGE-owner:localhost": owner-login
     members:
@@ -95,3 +96,15 @@ approval_overrides:
   k8s.rollback: true
 
 approval_timeout_seconds: 600
+
+# SBOM reports and the deploy gate (Phase 4). CI makes the SBOM and the scan; we collect, compare and decide.
+sbom:
+  workflow: .github/workflows/ci.yml          # the only workflow whose artifacts are believed
+  data_dir: ~/shipyard-sbom
+  poll_seconds: 90
+
+# The dashboard listens on loopback only; reach it with: ssh -L 8780:localhost:8780 <vm>
+dashboard:
+  port: 8780
+  session_hours: 8
+  members_file: ~/shipyard-members.json       # roles edited in the dashboard are kept here and win over `members:` above
