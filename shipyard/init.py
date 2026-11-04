@@ -1,0 +1,380 @@
+"""`shipyard init`: from a machine that already runs Switch to a working ops room.
+
+It asks only what it cannot find out: it lists the rooms from Switch and the apps from Coolify, checks the GitHub App
+before it writes anything, registers the Gatekeeper, optionally creates the Ops and Repo agents, installs a systemd user
+service and finishes with `doctor`. Every secret goes into a file readable only by you; nothing secret is printed.
+Run it again to repair or change things: it overwrites its own files and keeps the audit database.
+"""
+from __future__ import annotations
+
+import getpass
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Callable
+
+import yaml
+
+from . import defaults
+from .access import AccessError, Gateway, read_env
+from .config import load_config
+
+REPO_DIR = Path(__file__).resolve().parent.parent
+UNIT = """[Unit]
+Description=Shipyard Gatekeeper
+After=network-online.target
+
+[Service]
+WorkingDirectory={workdir}
+ExecStart={python} -m shipyard run --config {config}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+"""
+
+
+class InitError(Exception):
+    """Something the person has to fix; the message says what."""
+
+
+def _write_secret(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(path, 0o600)
+
+
+def _http(method: str, url: str, headers: dict[str, str] | None = None, body: Any = None, timeout: float = 20.0) -> tuple[int, Any]:
+    req = urllib.request.Request(url, method=method, headers={"Content-Type": "application/json", **(headers or {})},
+                                 data=json.dumps(body).encode() if body is not None else None)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            return r.status, json.loads(raw) if raw else None
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode(errors="replace")[:200]
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise InitError(f"cannot reach {url.split('?')[0]}: {exc}") from None
+
+
+class Installer:
+    """All the effects go through injected pieces (`ask`, `say`, `gateway`, `http`, `run`), so the whole flow is testable."""
+
+    def __init__(self, answers: dict[str, Any], home: Path, *, interactive: bool = True,
+                 ask: Callable[[str, str], str] | None = None, secret: Callable[[str], str] | None = None,
+                 say: Callable[[str], None] = print, gateway: Callable[[str, str, str], Any] = Gateway,
+                 http: Callable[..., tuple[int, Any]] = _http, run: Callable[..., Any] | None = None,
+                 github_check: Callable[[str, str, str], str] | None = None, python: str = sys.executable, workdir: Path = REPO_DIR):
+        self.a, self.home, self.interactive = answers, home, interactive
+        self._ask, self._secret, self.say, self.gateway, self.http = ask or self._input, secret or getpass.getpass, say, gateway, http
+        self.run = run or (lambda argv, **kw: subprocess.run(argv, capture_output=True, text=True, timeout=60, **kw))
+        self.github_check, self.python, self.workdir = github_check or self._github_check, python, workdir
+        self.t0 = time.time()
+        self.paths = {"config": home / "shipyard.yaml", "gatekeeper": home / "gatekeeper.json", "mcp": home / "gatekeeper-mcp.token",
+                      "coolify": home / "coolify.env", "unit": home / ".config/systemd/user/shipyard-gatekeeper.service"}
+
+    # -- asking -------------------------------------------------------------------
+
+    @staticmethod
+    def _input(question: str, default: str = "") -> str:
+        got = input(f"{question}" + (f" [{default}]" if default else "") + ": ").strip()
+        return got or default
+
+    def get(self, key: str, question: str, default: str = "", secret: bool = False, required: bool = False) -> str:
+        """An answer from the answers file, else asked (interactive), else the default or an error."""
+        cur: Any = self.a
+        for part in key.split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if cur not in (None, ""):
+            return str(cur)
+        if not question:
+            return default
+        if not self.interactive:
+            if required:
+                raise InitError(f"missing answer: {key}")
+            return default
+        return (self._secret(question + ": ") if secret else self._ask(question, default)).strip() or default
+
+    # -- steps ---------------------------------------------------------------------
+
+    def preflight(self) -> list[str]:
+        problems = []
+        if sys.version_info < (3, 10):
+            problems.append("Python 3.10 or newer is needed")
+        if shutil.which("openssl") is None:
+            problems.append("openssl is needed (it signs the GitHub App token); install it with your package manager")
+        if shutil.which("systemctl") is None:
+            problems.append("systemctl was not found: the Gatekeeper is installed as a systemd user service")
+        return problems
+
+    def switch(self) -> tuple[Any, dict[str, str], str, str]:
+        url = self.get("switch.url", "Switch URL", "http://localhost:8000").rstrip("/")
+        env_file = self.get("switch.env_file", "Path to Switch's .env (it holds the admin login)", str(self.home / "switch/.env"))
+        try:
+            env = read_env(env_file)
+            gw = self.gateway(url, env["GATEWAY_ADMIN_EMAIL"], env["GATEWAY_ADMIN_PASSWORD"])
+        except FileNotFoundError:
+            raise InitError(f"{env_file} does not exist: point at the .env of your Switch install") from None
+        except KeyError as exc:
+            raise InitError(f"{env_file} has no {exc.args[0]}") from None
+        except AccessError as exc:
+            raise InitError(str(exc)) from None
+        self.say(f"  Switch answers at {url}")
+        return gw, env, url, env_file
+
+    def rooms(self, gw: Any) -> dict[str, list[str]]:
+        status, rows = gw.call("GET", "/rooms")
+        if status != 200 or not isinstance(rows, list):
+            raise InitError(f"Switch would not list its rooms ({status})")
+        label = lambda r: f"{r['name']} ({r.get('bridge_display_name') or 'room'})"  # noqa: E731
+        chosen: dict[str, list[str]] = {"ops": [], "maintainers": []}
+        for kind, q in (("ops", "ops rooms (alerts, deploys)"), ("maintainers", "maintainers rooms (PRs, digest)")):
+            want = self.a.get("rooms", {}).get(kind)
+            if want is None and self.interactive:
+                for i, r in enumerate(rows, 1):
+                    self.say(f"    {i:2}. {label(r)}")
+                picked = self._ask(f"Numbers of the {q}, comma separated, blank for none", "")
+                want = [rows[int(n) - 1]["id"] for n in picked.replace(" ", "").split(",") if n.isdigit() and 0 < int(n) <= len(rows)]
+            for item in want or []:
+                hits = [r["id"] for r in rows if item in (r["id"], r["name"])]
+                if not hits:
+                    raise InitError(f"no room called {item!r} in Switch")
+                chosen[kind] += [h for h in hits if h not in chosen[kind]]
+        if not chosen["ops"] and not chosen["maintainers"]:
+            raise InitError("pick at least one room")
+        self.room_labels = {r["id"]: f"#{r['name']} ({r.get('bridge_display_name') or 'room'})" for r in rows}
+        return chosen
+
+    def coolify(self) -> tuple[str, str, dict[str, str]]:
+        url = self.get("coolify.url", "Coolify URL, e.g. http://10.0.0.5:8000 (blank to skip)", "").rstrip("/")
+        if not url:
+            return "", "", {}
+        token = os.environ.get("COOLIFY_TOKEN") or self.get("coolify.token", "Coolify API token (needs Read, Write, Deploy; input hidden)", secret=True, required=True)
+        status, rows = self.http("GET", f"{url}/api/v1/applications", {"Authorization": f"Bearer {token}"})
+        if status != 200 or not isinstance(rows, list):
+            raise InitError(f"Coolify refused the token or the URL ({status})")
+        apps = {str(r["name"]).replace(" ", "-").lower(): str(r["uuid"]) for r in rows if r.get("uuid") and r.get("name")}
+        want = self.a.get("coolify", {}).get("apps")
+        if want is None and self.interactive and apps:
+            self.say("  Coolify applications: " + ", ".join(apps))
+            got = self._ask("Which ones may Shipyard manage (comma separated, blank for all)", "")
+            want = [x.strip() for x in got.split(",") if x.strip()] or None
+        if want:
+            missing = [w for w in want if w not in apps]
+            if missing:
+                raise InitError(f"Coolify has no application called {', '.join(missing)} (it has: {', '.join(apps) or 'none'})")
+            apps = {k: v for k, v in apps.items() if k in want}
+        self.say(f"  Coolify answers; {len(apps)} application(s)")
+        return url, token, apps
+
+    @staticmethod
+    def _github_check(app_id: str, key_file: str, repo: str) -> str:
+        from .github import GitHubApp
+        return GitHubApp(app_id, key_file).installation_for(repo)
+
+    def github(self, apps: dict[str, str]) -> dict[str, Any] | None:
+        app_id = self.get("github.app_id", "GitHub App id (blank to skip repo features)", "")
+        if not app_id:
+            return None
+        key = os.path.expanduser(self.get("github.private_key_file", "Path to the GitHub App's private key (.pem)", str(self.home / "shipyard-github.pem")))
+        repo = self.get("github.repo", "Repository, owner/name", required=True)
+        if not os.path.exists(key):
+            raise InitError(f"{key} does not exist")
+        if oct(os.stat(key).st_mode & 0o077) != "0o0":
+            os.chmod(key, 0o600)
+            self.say("  tightened the key file to 0600")
+        try:
+            inst = self.github_check(app_id, key, repo)
+        except Exception as exc:
+            raise InitError(f"the GitHub App cannot see {repo}: {exc}. Install the App on that repository first") from None
+        deploy = self.get("github.deploy_app", "App to deploy after a merge (blank for none)", next(iter(apps), "") if len(apps) == 1 else "")
+        if deploy and deploy not in apps:
+            raise InitError(f"github.deploy_app {deploy!r} is not one of the Coolify apps")
+        self.say(f"  GitHub App installation {inst} on {repo}")
+        return {"app_id": app_id, "key": key, "repo": repo, "deploy": deploy or None, "installation": inst}
+
+    # -- the files -------------------------------------------------------------------
+
+    def build_config(self, project: str, switch_url: str, env_file: str, rooms: dict[str, list[str]], coolify: tuple[str, str, dict[str, str]],
+                     gh: dict[str, Any] | None, dashboard: bool) -> dict[str, Any]:
+        cfg: dict[str, Any] = {
+            "switch": {"url": switch_url, "credentials_file": str(self.paths["gatekeeper"]), "gateway_env_file": env_file,
+                       "managed_agents": ["ops-agent", "repo-agent"], "allow_agents": ["gatekeeper"]},
+            "coolify": {"url": coolify[0], "token_file": str(self.paths["coolify"])},
+            "gatekeeper": {"mcp_port": 8765, "mcp_token_file": str(self.paths["mcp"]), "db_path": str(self.home / "shipyard.db")},
+            "projects": {project: {
+                "rooms": {"ops": rooms["ops"], "maintainers": rooms["maintainers"]},
+                "room_names": {k: v for k, v in self.room_labels.items() if k in rooms["ops"] + rooms["maintainers"]},
+                "apps": coolify[2], "members": {}}},
+            "actions": dict(defaults.ACTIONS), "min_role": dict(defaults.MIN_ROLE), "approval_overrides": dict(defaults.APPROVAL_OVERRIDES),
+            "approval_timeout_seconds": 600,
+            "alerts": {"port": 8766, "evidence_lines": 40, "agent": "ops-agent"},
+            "digest": {"hour": 9, "minute": 0, "timezone": self.get("digest.timezone", "", "Asia/Kolkata")},
+            "sbom": {"workflow": ".github/workflows/ci.yml", "data_dir": str(self.home / "shipyard-sbom"), "poll_seconds": 90},
+        }
+        if dashboard:
+            cfg["dashboard"] = {"port": 8780, "session_hours": 8, "members_file": str(self.home / "shipyard-members.json")}
+        if gh:
+            cfg["github"] = {"app_id": gh["app_id"], "installation_id": gh["installation"], "private_key_file": gh["key"], "poll_seconds": 60}
+            cfg["projects"][project]["repo"] = {"name": gh["repo"], "required_checks": ["test", "sbom"], "merge_method": "squash", "branch": "main",
+                                                **({"app": gh["deploy"]} if gh["deploy"] else {})}
+        return cfg
+
+    def register(self, gw: Any, env: dict[str, str], url: str, room_ids: list[str]) -> str:
+        """Create (or replace) the Gatekeeper agent in Switch, open its addressing and add it to the project's rooms."""
+        status, reg = self.http("POST", f"{url}/agents", {"Authorization": f"Bearer {env.get('AGENT_REGISTRATION_TOKEN', '')}"}, {
+            "name": "gatekeeper", "description": "Shipyard Gatekeeper: roles, approvals and audit for chat-driven ops",
+            "connector_type": "custom", "overwrite": True,
+            "integration_profile": {"connection_model": "always_on", "message_exchange": True,
+                                    "pre_invocation_mediation": [], "post_invocation_mediation": [], "event_reporting": []}})
+        if status not in (200, 201) or not isinstance(reg, dict):
+            raise InitError(f"Switch would not register the Gatekeeper ({status}); is AGENT_REGISTRATION_TOKEN set in its .env?")
+        _write_secret(self.paths["gatekeeper"], json.dumps({"id": reg["id"], "api_key": reg["api_key"], "name": "gatekeeper"}))
+        if not self.paths["mcp"].exists():
+            _write_secret(self.paths["mcp"], secrets.token_hex(24))
+        gw.call("PUT", f"/agents/{reg['id']}/addressing-policy", {"policy": None})        # the Gatekeeper authorizes by itself
+        for room in room_ids:
+            status, _ = gw.call("POST", f"/rooms/{room}/agents", {"agent_ids": [reg["id"]]})
+            if status not in (200, 201, 204, 409):
+                self.say(f"  warning: could not add the Gatekeeper to room {room} ({status})")
+        self.say("  registered the Gatekeeper in Switch and added it to the rooms")
+        return str(reg["id"])
+
+    def agents(self, gw: Any) -> None:
+        """Create the Ops and Repo agents from the templates, on a controller the person names."""
+        status, ctrls = gw.call("GET", "/management/controllers")
+        rows = (ctrls if isinstance(ctrls, list) else (ctrls or {}).get("controllers", [])) if status == 200 else []
+        if not rows:
+            self.say("  skipped the agents: Switch has no enrolled controller (see README, 'The agents')")
+            return
+        want = self.get("agents.controller", "Controller to run the agents on", rows[0]["name"])
+        ctrl = next((c for c in rows if want in (c["name"], c["id"])), None)
+        if ctrl is None:
+            raise InitError(f"no controller called {want!r} (there is: {', '.join(c['name'] for c in rows)})")
+        home = self.get("agents.home", "Directory the agents work in", str(self.home))
+        for name in ("ops-agent", "repo-agent"):
+            tpl = json.loads((self.workdir / "templates/agents" / f"{name}.json").read_text())
+            tpl["definition"]["directory"] = tpl["definition"]["directory"].format(agent_home=home)
+            Path(tpl["definition"]["directory"]).mkdir(parents=True, exist_ok=True)
+            status, r = gw.call("POST", "/management/agents", {"name": tpl["name"], "description": tpl["description"], "controller_id": ctrl["id"],
+                                                               "desired_state": "running", "definition": tpl["definition"]})
+            self.say(f"  {name}: " + ("created" if status in (200, 201) else f"Switch answered {status} (it may exist already)"))
+
+    def write_codex_config(self) -> None:
+        """The agents' only tools: the Gatekeeper's request tool. No Coolify, GitHub or Switch credential."""
+        token = self.paths["mcp"].read_text().strip()
+        path = Path(self.get("agents.codex_config", "", str(self.home / ".codex/config.toml")))
+        text = ('# Written by `shipyard init`. The agents hold only the Gatekeeper\'s request tool: no Coolify, GitHub or Switch credential.\n'
+                '[mcp_servers.gatekeeper]\nurl = "http://127.0.0.1:8765/mcp"\n'
+                f'http_headers = {{ Authorization = "Bearer {token}" }}\n')
+        _write_secret(path, text)
+        self.say(f"  wrote the agents' tool config ({path})")
+
+    def service(self) -> None:
+        unit = self.paths["unit"]
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text(UNIT.format(workdir=self.workdir, python=self.python, config=self.paths["config"]))
+        for argv in (["systemctl", "--user", "daemon-reload"], ["systemctl", "--user", "enable", "--now", "shipyard-gatekeeper"]):
+            r = self.run(argv)
+            if getattr(r, "returncode", 0) != 0:
+                raise InitError(f"`{' '.join(argv)}` failed: {(getattr(r, 'stderr', '') or '').strip()[:200]}")
+        self.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"])
+        self.run(["loginctl", "enable-linger", os.environ.get("USER", "")])               # keeps it running after you log out
+        self.say("  installed and started the systemd user service")
+
+    # -- the whole thing ---------------------------------------------------------------------
+
+    def install(self, dry_run: bool = False) -> dict[str, Any]:
+        for p in self.preflight():
+            raise InitError(p)
+        self.say("1/5 Switch")
+        gw, env, url, env_file = self.switch()
+        project = self.get("project", "Project name", "demo")
+        rooms = self.rooms(gw)
+        self.say("2/5 Coolify")
+        cool = self.coolify()
+        self.say("3/5 GitHub")
+        gh = self.github(cool[2])
+        owner = self.get("owner", "Your chat identity (what `@gatekeeper whoami` prints; blank to add it after)", "")
+        cfg = self.build_config(project, url, env_file, rooms, cool, gh,
+                                bool(self.a.get("dashboard", True)))
+        if owner:
+            cfg["projects"][project]["members"][owner] = "owner"
+        if dry_run:
+            self.say("dry run: nothing written")
+            return cfg
+        self.say("4/5 Writing files and registering")
+        self.home.mkdir(parents=True, exist_ok=True)
+        self.paths["config"].write_text(yaml.safe_dump(cfg, sort_keys=False))
+        os.chmod(self.paths["config"], 0o600)
+        if cool[1]:
+            _write_secret(self.paths["coolify"], f"COOLIFY_TOKEN={cool[1]}\n")
+        load_config(self.paths["config"])                                                  # refuse to go on with a config we cannot read
+        self.register(gw, env, url, rooms["ops"] + rooms["maintainers"])
+        if self.get("agents.create", "Create the Ops and Repo agents in Switch? (yes/no)", "yes").lower() in ("yes", "y", "true"):
+            self.agents(gw)
+            self.write_codex_config()
+        self.say("5/5 Starting")
+        self.service()
+        cfg["_project"] = project
+        return cfg
+
+
+def doctor(config_path: Path, say: Callable[[str], None] = print, http: Callable[..., tuple[int, Any]] = _http,
+           gateway: Callable[..., Any] = Gateway, run: Callable[..., Any] | None = None, wait: float = 20.0) -> bool:
+    """Every check says what it looked at. Returns False if any failed."""
+    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=15))
+    ok = True
+
+    def line(good: bool, text: str) -> None:
+        nonlocal ok
+        ok = ok and good
+        say(("  ok   " if good else "  FAIL ") + text)
+    try:
+        cfg = load_config(config_path)
+    except Exception as exc:                                  # noqa: BLE001 - any damage to the file is the finding
+        line(False, f"{config_path} cannot be read: {exc}")
+        return False
+    line(True, f"config {config_path} reads ({len(cfg.projects)} project)")
+    for name, p in cfg.projects.items():
+        line(bool(p.rooms), f"project {name}: {len(p.ops_rooms)} ops room(s), {len(p.maintainer_rooms)} maintainers room(s), {len(cfg.policy.members.get(name, {}))} member(s)")
+        if not cfg.policy.members.get(name):
+            say("       no owner yet: type `@gatekeeper whoami` in a room, then run `python3 -m shipyard add-owner --identity <the id it prints>`")
+    try:
+        env = read_env(cfg.gateway_env_file)
+        gateway(cfg.switch_url, env["GATEWAY_ADMIN_EMAIL"], env["GATEWAY_ADMIN_PASSWORD"])
+        line(True, f"Switch admin login works at {cfg.switch_url}")
+    except Exception as exc:                                  # noqa: BLE001
+        line(False, f"Switch: {exc}")
+    if cfg.coolify_url:
+        try:
+            token = read_env(cfg.coolify_token_file)["COOLIFY_TOKEN"]
+            status, _ = http("GET", f"{cfg.coolify_url}/api/v1/applications", {"Authorization": f"Bearer {token}"})
+            line(status == 200, f"Coolify answers {status}")
+        except Exception as exc:                              # noqa: BLE001
+            line(False, f"Coolify: {exc}")
+    r = run(["systemctl", "--user", "is-active", "shipyard-gatekeeper"])
+    line(getattr(r, "stdout", "").strip() == "active", "systemd service shipyard-gatekeeper is active")
+    if cfg.dashboard.bind:
+        deadline = time.time() + wait
+        status = 0
+        while True:                                           # the service needs a few seconds to come up
+            try:
+                status, _ = http("GET", f"http://127.0.0.1:{cfg.dashboard.port}/", timeout=3)
+            except InitError:
+                status = 0
+            if status == 200 or time.time() >= deadline:
+                break
+            time.sleep(1)
+        line(status == 200, f"dashboard answers on 127.0.0.1:{cfg.dashboard.port} (reach it with an SSH tunnel)")
+    return ok

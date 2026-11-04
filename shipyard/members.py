@@ -98,6 +98,19 @@ class MemberStore:
             return [{"identity": d["identity"], "from": d["from"].name.lower() if d["from"] else None,
                      "to": d["to"].name.lower() if d["to"] else None} for d in done]
 
+    def add_owner(self, project: str, identity: str) -> None:
+        """Local administration (needs a shell on the machine): make `identity` an owner. Used once, to bootstrap a new install.
+        It is not written to the audit log: another process writing the chain at the same time could fork it."""
+        with self.lock:
+            if project not in self.policy.members:
+                raise MemberError("unknown project")
+            if not IDENTITY.match(identity):
+                raise MemberError("that is not a chat identity: paste the id that `@gatekeeper whoami` prints")
+            new = self.members(project)
+            new[identity] = Role.OWNER
+            self._write(project, new)
+            self.policy.members[project] = new                          # type: ignore[index]
+
     def _write(self, project: str, members: dict[str, Role]) -> None:
         data: dict[str, dict[str, str]] = {}
         if self.path.exists():

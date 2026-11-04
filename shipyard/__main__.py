@@ -11,7 +11,12 @@ import logging
 import os
 import secrets
 import sqlite3
+import subprocess
 import threading
+import time
+from pathlib import Path
+
+import yaml
 
 from . import webhook
 from .config import Config, expand, load_config
@@ -24,7 +29,8 @@ from .gatekeeper import Gatekeeper
 from .hostshell import HostShell
 from .github import GitHubApp, GitHubError
 from .health import Health
-from .members import MemberStore
+from .init import InitError, Installer, doctor
+from .members import MemberError, MemberStore
 from .kube import Kube
 from .mcp_server import serve
 from .prwatch import PrWatcher
@@ -141,6 +147,39 @@ def run(config_path: str) -> None:
             log.exception("event failed")
 
 
+def _init(args) -> None:
+    answers = yaml.safe_load(open(args.answers)) if args.answers else {}
+    inst = Installer(answers or {}, Path(args.home), interactive=not args.answers)
+    try:
+        cfg = inst.install(dry_run=args.dry_run)
+    except InitError as exc:
+        raise SystemExit(f"\nStopped: {exc}\nNothing after this point was done. Fix it and run `python3 -m shipyard init` again.") from None
+    if args.dry_run:
+        print(yaml.safe_dump({k: v for k, v in cfg.items() if k != "_project"}, sort_keys=False))
+        return
+    print("\nChecking the install:")
+    good = doctor(inst.paths["config"])
+    print(f"\n{'Done' if good else 'Installed, with problems above'} in {int(time.time() - inst.t0)} s. Next:")
+    print("  1. In a Shipyard room, type  @gatekeeper whoami  and copy the id it prints.")
+    print("  2. python3 -m shipyard add-owner --identity '<that id>'   (then: systemctl --user restart shipyard-gatekeeper)")
+    print("  3. @gatekeeper help   shows the commands. The dashboard: ssh -L 8780:localhost:8780 <this machine>, open http://localhost:8780")
+    if cfg["coolify"]["url"]:
+        print("  4. In Coolify, send notifications to:  python3 -m shipyard webhook-url --host <this machine's private address>")
+
+
+def _add_owner(args) -> None:
+    cfg = load_config(args.config)
+    project = args.project or next(iter(cfg.projects))
+    store = MemberStore(expand(cfg.dashboard.members_file), cfg.policy, None)
+    store.load()
+    try:
+        store.add_owner(project, args.identity)
+    except MemberError as exc:
+        raise SystemExit(str(exc)) from None
+    subprocess.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"], check=False)
+    print(f"{args.identity} is now an owner of {project}. The Gatekeeper was restarted.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="shipyard")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -154,8 +193,24 @@ def main() -> None:
     t.add_argument("--identity", required=True, help="the member's chat id, as `@gatekeeper whoami` prints it")
     t.add_argument("--project", default=None)
     t.add_argument("--hours", type=float, default=8.0)
+    i = sub.add_parser("init", help="set Shipyard up on this machine (needs a running Switch)")
+    i.add_argument("--answers", help="a YAML file of answers: no questions are asked")
+    i.add_argument("--home", default=os.path.expanduser("~"), help="where the config and secrets go (default: your home)")
+    i.add_argument("--dry-run", action="store_true", help="check everything and print the config, write nothing")
+    d = sub.add_parser("doctor", help="check the install and say what is wrong")
+    d.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
+    o = sub.add_parser("add-owner", help="make a person the owner of a project (run once on a new install, on the machine)")
+    o.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
+    o.add_argument("--identity", required=True, help="the id that `@gatekeeper whoami` printed")
+    o.add_argument("--project", default=None)
     args = ap.parse_args()
-    if args.cmd == "run":
+    if args.cmd == "init":
+        _init(args)
+    elif args.cmd == "doctor":
+        raise SystemExit(0 if doctor(Path(args.config)) else 1)
+    elif args.cmd == "add-owner":
+        _add_owner(args)
+    elif args.cmd == "run":
         run(args.config)
     elif args.cmd == "dashboard-token":
         cfg = load_config(args.config)
