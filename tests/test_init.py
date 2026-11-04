@@ -266,3 +266,24 @@ def test_dry_run_says_which_rooms_it_would_create(home):
     inst.gateway = lambda *x: EmptyGw()
     cfg = inst.install(dry_run=True)
     assert cfg["projects"]["demo"]["rooms"]["ops"] == ["<new: demo-ops>"] and not (home / "gatekeeper.json").exists()
+
+
+def test_the_real_http_helper_copes_with_html_and_json_and_errors():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from shipyard.init import _http
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body, ctype, code = {"/": (b"<html>hi</html>", "text/html", 200), "/j": (b'{"a": 1}', "application/json", 200), "/no": (b"nope", "text/plain", 401)}[self.path]
+            self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    assert _http("GET", base + "/") == (200, "<html>hi</html>") and _http("GET", base + "/j") == (200, {"a": 1}) and _http("GET", base + "/no")[0] == 401
+    srv.shutdown()
+    with pytest.raises(InitError, match="cannot reach"):
+        _http("GET", "http://127.0.0.1:1/", timeout=1)

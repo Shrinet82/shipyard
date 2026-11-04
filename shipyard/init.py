@@ -60,10 +60,13 @@ def _http(method: str, url: str, headers: dict[str, str] | None = None, body: An
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
-            return r.status, json.loads(raw) if raw else None
+            try:
+                return r.status, json.loads(raw) if raw else None
+            except ValueError:                                  # not JSON (the dashboard's page is HTML): the status is what matters
+                return r.status, raw.decode(errors="replace")[:200]
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode(errors="replace")[:200]
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, OSError) as exc:
         raise InitError(f"cannot reach {url.split('?')[0]}: {exc}") from None
 
 
