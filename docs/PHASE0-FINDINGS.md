@@ -69,9 +69,33 @@ that sees only its own directory. Candidate for Phase 3 isolation.
 3. **Agents inherit their owner's permissions** (`identity-and-access.md`). The Ops Agent must therefore be owned by a low-privilege Gateway user, and hold no write credentials. This is already the plan, and now has a concrete requirement.
 4. **Addressing policy is set by the agent's owner or an admin** (`PUT /agents/{id}/addressing-policy` on the Gateway), not by the agent. The Phase 4 dashboard can do this through the Gateway API.
 
-## Open
+## Discord (verified)
 
-- Discord end to end (needs the user's bot token).
-- Q5, Q6 (above).
-- Q7 controller install and enrollment.
-- A human-versus-agent check with two real agents.
+- Connect with `POST /gateway/collaborations`, body `{bridge_type: "discord", display_name,
+  connection_config: {bot_token, guild_id, agent_roles}}`. The server id can be read from the
+  bot token (`GET /users/@me/guilds`). Both privileged intents (Server Members, Message
+  Content) must be on, or the bot receives empty messages.
+- A Discord channel becomes a Switch room only when someone posts in it **after** the
+  connection is live. Agents are then added with `POST /gateway/rooms/{id}/agents`.
+- Switch records the real numeric Discord user id as `external_user_id`
+  (`GET /gateway/collaborations/{bridge}/users`), plus the username and who has claimed it.
+  Claiming (`POST .../identities`) linked the Discord account to the Switch admin user
+  without a confirmation code for this bridge.
+- Exit check: `@ops-agent status` in `#ops-base` returned the real Coolify state of
+  `demo-app`, on Discord, through Codex on the build VM and the read-only Coolify tools.
+
+## Spend
+
+About $0.34 after 1.4 hours (t3.xlarge $0.1792/h, t3.medium $0.0448/h, plus an estimate for
+disks and public IPv4), against a $1.25 budget for 5 hours. Both VMs are still running.
+
+## Open for Phase 1
+
+- Q6 second half: create a Read-only Coolify token and check that Coolify itself refuses write
+  tools. The Gatekeeper should hold a separate token with Deploy and Write but not
+  Read Sensitive.
+- The Ops Agent currently uses a full-access token, limited to read-only tools only by the
+  Codex `enabled_tools` allow-list. Replace it with the read-only token.
+- Both agents share one Codex config (`~/.codex/config.toml`) on the build VM. Per-agent
+  tool sets need `install-service --separate-users`.
+- A human-versus-agent check with two real agents (the participant `type` field is the plan).

@@ -55,9 +55,11 @@ start. Teardown (terminate everything) after judging.
 
 ## Exit gate
 
-- [ ] In Discord, `@ops status` returns the real Coolify app status.
-- [ ] Q1 to Q9 answered in `docs/PHASE0-FINDINGS.md`, each with evidence.
-- [ ] Design decisions that depend on the answers are written down (identity source, how
+- [x] In Discord, `@ops-agent status` returns the real Coolify app status (Nov 4, 16:52 IST).
+- [x] Q1 to Q9 answered in `docs/PHASE0-FINDINGS.md`, each with evidence. Q6 is half answered:
+      the read-only token test is deferred to the start of Phase 1, when the Gatekeeper's
+      own tokens are created.
+- [x] Design decisions that depend on the answers are written down (identity source, how
       webhooks arrive, how exec works).
-- [ ] Repo on GitHub, build VM and Coolify VM reachable by SSH, a stop/start script for both.
-- [ ] Total spend so far recorded.
+- [x] Repo on GitHub, build VM and Coolify VM reachable by SSH, a stop/start script for both.
+- [x] Total spend so far recorded: about $0.34 after 1.4 hours (estimate, see findings).
