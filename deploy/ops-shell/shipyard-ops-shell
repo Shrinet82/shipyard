@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Forced command for the shipyard-ops SSH key. Runs ONE allowlisted read-only diagnostic and exits.
+
+sshd runs this instead of whatever the client asked for and hands the client's request over in
+SSH_ORIGINAL_COMMAND. We apply the same allowlist as the Gatekeeper (symlinks resolved here), run the command as
+an argument list (never a shell), with no tty, a timeout and an output cap, as an unprivileged user with no sudo.
+Every call is logged to syslog.
+"""
+import os
+import subprocess
+import sys
+import syslog
+
+sys.path.insert(0, "/usr/local/lib/shipyard-ops")
+from shellrules import Refused, check_host  # noqa: E402
+
+TIMEOUT = 20
+MAX_OUT = 20000
+
+
+def main() -> int:
+    syslog.openlog("shipyard-ops-shell", 0, syslog.LOG_AUTH)
+    original = os.environ.get("SSH_ORIGINAL_COMMAND", "")
+    who = os.environ.get("SSH_CONNECTION", "?").split(" ")[0]
+    if not original:
+        syslog.syslog(syslog.LOG_WARNING, f"refused (no command) from {who}")
+        print("refused: this key runs one allowlisted command per connection", file=sys.stderr)
+        return 2
+    try:
+        argv = check_host(original.split(), resolve=os.path.realpath)
+    except Refused as exc:
+        syslog.syslog(syslog.LOG_WARNING, f"refused {original[:200]!r} from {who}: {exc}")
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    syslog.syslog(syslog.LOG_INFO, f"run {' '.join(argv)!r} from {who}")
+    try:
+        p = subprocess.run(list(argv), capture_output=True, text=True, timeout=TIMEOUT, shell=False, cwd="/",
+                           stdin=subprocess.DEVNULL, env={"PATH": "/usr/bin:/bin", "LANG": "C", "SYSTEMD_PAGER": "", "SYSTEMD_COLORS": "0"})
+    except subprocess.TimeoutExpired:
+        print(f"refused: the command ran longer than {TIMEOUT} s", file=sys.stderr)
+        return 3
+    out = (p.stdout + p.stderr)[:MAX_OUT]
+    sys.stdout.write(out)
+    return p.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())
