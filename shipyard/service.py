@@ -6,6 +6,7 @@ function, so it is tested with fakes and run for real by shipyard.__main__.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import threading
 import time
 from typing import Any, Callable
@@ -22,6 +23,8 @@ ACTION_FOR_VERB = {
     "rollback": "coolify.rollback",
     "audit": "audit.read",
 }
+# "@switch-<platform>-<bridge uuid>-<account name>:<server>" -> the account name
+_SENDER = re.compile(r"^@switch-[a-z]+-[0-9a-f-]{36}-(?P<name>.+):[^:]+$")
 MESSAGE_TTL = 300.0       # a proposal must cite a message this recent
 CACHE_LIMIT = 500
 
@@ -39,7 +42,10 @@ class Service:
     # -- helpers --------------------------------------------------------------
 
     def _name(self, sender: str) -> str:
-        return self.names.get(sender, sender)
+        if sender in self.names:
+            return self.names[sender]
+        m = _SENDER.match(sender)          # not seen since a restart: read the account name off the id
+        return m.group("name") if m else sender
 
     def _remember(self, room: str, p: dict[str, Any]) -> None:
         with self.lock:
