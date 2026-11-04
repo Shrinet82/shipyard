@@ -1,0 +1,46 @@
+# Shipyard policy. Chat identities are "<platform>:<user id>", never display names.
+projects:
+  demo:
+    members:
+      "discord:111111111111111111": owner
+      "discord:222222222222222222": maintainer
+      "discord:333333333333333333": deployer
+      "discord:444444444444444444": viewer
+
+# Tier per action. Unlisted actions are denied (fail closed).
+actions:
+  coolify.status:    read
+  coolify.logs:      read
+  coolify.history:   read
+  k8s.status:        read
+  k8s.logs:          read
+  k8s.events:        read
+  repo.pr_list:      read
+  repo.digest:       read
+  audit.read:        read
+  sbom.read:         read
+  coolify.deploy:    change
+  coolify.restart:   change
+  k8s.restart:       change
+  k8s.scale:         change
+  coolify.rollback:  change      # phase 1 exit check wants owner approval here:
+  repo.merge:        dangerous
+  ops.shell:         dangerous
+  ops.exec:          dangerous
+  secrets.read:      dangerous
+  coolify.stop_prod: dangerous
+  coolify.delete:    dangerous
+  deploy.override_cve_gate: dangerous
+  ops.firewall:      blocked
+  repo.force_push_main: blocked
+
+# Dangerous actions that need more than maintainer to even request.
+min_role:
+  ops.shell: owner
+  ops.exec: owner
+
+# Change-tier actions that still need an approval (second person or owner).
+approval_overrides:
+  coolify.rollback: true
+
+approval_timeout_seconds: 600
