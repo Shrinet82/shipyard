@@ -14,12 +14,28 @@ Docker stack on `shipyard-build` (Mumbai). Probe: `spikes/probe_gatekeeper.py`.
 | Q8 | **A template is one YAML file** (`version`, `params`, `agent`, `room`, `kickoff`), with `provider` one of `claude`, `codex`, `opencode`. Shipyard ships its template in `templates/`. Antigravity is not a built-in provider. | `docs/TEMPLATES.md`, `examples/` |
 | Q9 | **Yes.** `post_message` (after `invite_agent_to_room` and `connect_to_room`) posts into the room as the agent; Mattermost shows it as a bot post. | Probe output |
 
-## Needs a Coolify admin account first (the user registers it)
+## Coolify (4.6.0)
 
-| # | State |
-|---|---|
-| Q5 | Coolify's docs describe no exec endpoint. Unconfirmed until we can read the API reference on a running instance. Fallback is SSH via the Gatekeeper. |
-| Q6 | Coolify's docs describe no read-only MCP mode. Read-only must come from the API token's permissions; test after the first token is created. If tokens can't be read-only, the Gatekeeper's own Coolify adapter does all reads. |
+| # | Answer | Evidence |
+|---|---|---|
+| Q5 | **No exec or shell tool.** The MCP server at `/mcp` lists 81 tools; the closest is `manage_scheduled_task`, which can run commands in containers, so the Gatekeeper must treat it as dangerous. Exec stays SSH via the Gatekeeper. | `tools/list` |
+| Q6 | **Half answered.** About 48 tools carry `readOnlyHint`; the rest are marked destructive. The Ops Agent's read-only access is enforced client-side with an `enabled_tools` allow-list built from those hints (minus `get_env_values`). Whether a Read-only API token makes Coolify itself refuse writes is **untested**: the token used so far has Read, Write, Deploy and Read Sensitive. | `tools/list`; Codex `config.toml` |
+
+Exit check passed on Mattermost: `@ops-agent status` returned the real state of the demo app
+("demo-app: running") by calling Coolify's MCP.
+
+### Wiring an MCP server into a Switch-managed Codex agent
+
+- The controller copies the machine's `~/.codex/config.toml` into every Codex session, so MCP
+  config set there applies to **all agents on that machine**. Per-agent tool sets need
+  `install-service --separate-users` (each agent its own Linux user and home).
+- `--env-file` on `install-service` did not put `COOLIFY_TOKEN` into the Codex process, so
+  `bearer_token_env_var` fails silently and the tools just vanish. A literal
+  `http_headers = { Authorization = "Bearer ..." }` in the 0600 config file works.
+- A malformed `config.toml` also makes the agent report "no tools available" with no error.
+  Test the file first with `codex exec --skip-git-repo-check ... </dev/null` (without
+  `</dev/null` it waits on stdin), then restart the controller.
+- Agent working directories must exist before the agent is created.
 
 ## Q7: where agents run (answered: headless controller works)
 
