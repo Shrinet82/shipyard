@@ -90,13 +90,13 @@ A tiny web app with a `Dockerfile` and a GitHub Actions workflow that runs a uni
 
 ## Exit gate
 
-- [ ] Break a build on purpose: an alert appears in the ops room (Mattermost and Discord), the Ops Agent
-      diagnoses in three lines with options, and a rollback approved in chat restores the app.
-- [ ] `merge 6` goes through checks, approval, merge and deploy; `merge 4` and `merge 5` are refused with reasons.
-- [ ] PR alerts for opened, CI result and conflict; a stale alert at a shortened threshold.
-- [ ] `@gatekeeper digest` answers on demand, and the scheduled digest posts (verified with a near-term schedule).
+- [x] Break a build on purpose: an alert appears in the ops room (Mattermost and Discord), the Ops Agent
+      diagnoses in three lines with options, and a rollback approved in chat restores the app. (Rollback run on Mattermost; alerts and diagnosis seen on both.)
+- [x] `merge 6` goes through checks, approval, merge and deploy; `merge 4` and `merge 5` are refused with reasons.
+- [x] PR alerts for opened, CI result and conflict; a stale alert at a shortened threshold.
+- [x] `@gatekeeper digest` answers on demand, and the scheduled digest posts (verified with a near-term schedule).
 - [ ] The Ops Agent holds only a Read-only Coolify token, and Coolify refuses a write attempt.
-- [ ] All attack cases pass as automated tests, and the live ones are run once by hand.
+- [x] All attack cases pass as automated tests (186), and the live ones were run by hand.
 
 ## Progress (Nov 4, 2026)
 
@@ -104,7 +104,7 @@ A tiny web app with a `Dockerfile` and a GitHub Actions workflow that runs a uni
 |---|---|---|
 | 1 to 3 | Config, webhook listener, evidence and redaction | done, 183 tests |
 | 4 | Alert and Ops Agent wake-up | **verified live with Coolify's own webhook** on Mattermost and Discord (see below) |
-| 5 to 9 | GitHub client, poller, repo reads, merge, digest | built and tested against fakes; **waiting for the GitHub App** to run live |
+| 5 to 9 | GitHub client, poller, repo reads, merge, digest | **verified live** (GitHub App installed on the repo; see results below) |
 | 10 | Demo repo, five PRs, Coolify app `demo-web` | done; CI runs and gives the intended results on every PR |
 | 11 | Read-only Coolify token | waiting for the token |
 
@@ -118,6 +118,26 @@ Earlier test: a wrong webhook secret gets 404; the real event gets 200; the aler
 secrets removed; the Ops Agent diagnosed it in a few lines, and noticed that the test alert contradicted the deployment's real
 state (finished, running). On Discord a plain `@ops-agent` in the Gatekeeper's message is a real wake-up.
 
+## Live results (Nov 4, 2026, Mattermost with a test account per role, GitHub App `shipyard-gatekeeper-shrinet82`)
+
+| Step | Result |
+|---|---|
+| First poll | opened, CI passed and CI failed (#4), and conflict (#5) alerts in the maintainers room on Mattermost and Discord; the catch-up digest went out |
+| Maintainer: `merge 4` | Denied: CI failed (test). No approval created |
+| Maintainer: `merge 5` | Denied: it conflicts with main (reported before "no CI", since CI never runs on a conflicting PR) |
+| Maintainer: `merge 99` | Denied: there is no pull request #99 |
+| Deployer and viewer: `merge 6` | Denied: needs role maintainer or above |
+| Maintainer: `merge 6`, then self-approve, deployer approves, owner approves | refused twice, then merged; GitHub shows the merge by the app's bot account; the deploy ran and the app served the new version |
+| Maintainer: `merge 2` (CI green, Docker build broken), owner approves | merged; Coolify's build failed on that commit |
+| Alert and diagnosis | the Ops Agent named the commit and the failing Dockerfile line, said restarting would not help, and made no changes |
+| Deployer: `rollback demo-web`, owner approves | rolled back to the previous image; the app served the earlier version again |
+| Viewer asks `@repo-agent` about PR 4 | answered from live data through the Gatekeeper's tool: CI red, not ready to merge (the agent holds no GitHub access) |
+| Stale threshold lowered to 36 s | one stale alert per open PR (#5, #4, #1), not repeated |
+| Digest scheduled two minutes ahead | sent at 20:01:17 IST; `@gatekeeper digest` answers on demand |
+| Real settings restored | stale 48 h, digest 09:00 IST |
+
+After the broken merge, `main` was repaired with a revert commit on the demo repo so later merges deploy cleanly.
+
 ## Findings while building
 
 - **GitHub Actions had to be enabled by hand.** Until the owner opened the repo's Actions tab and enabled workflows there were
@@ -128,6 +148,8 @@ state (finished, running). On Discord a plain `@ops-agent` in the Gatekeeper's m
   current `main` unless a conflict is intended.
 - Creating a Discord channel through Switch needs an explicit `channel_type` (`channel_public`).
 - Coolify's webhook has no authentication and its SSRF guard blocks private addresses until allow-listed in Settings, Advanced.
+- The GitHub App merges as its own bot account, so the history shows who acted without anyone's personal login. The digest scheduler catches up if the
+  service starts after 09:00 and today's digest has not gone out. An assignee GitHub does not know counts as no issues.
 - Real tokens must never appear in test fixtures: a first draft of the redaction tests contained live tokens, caught before commit.
   Tests use made-up tokens of the same shape.
 
@@ -137,7 +159,7 @@ state (finished, running). On Discord a plain `@ops-agent` in the Gatekeeper's m
 2. **Coolify, Settings, Advanced:** add `172.31.10.178` to "webhook allowed internal hosts" and save. Then **Notifications, Webhook:**
    enable it, paste the URL from `python -m shipyard webhook-url --host 172.31.10.178` (run on the build VM), and tick
    Deployment failure and Status change.
-3. **GitHub App** (GitHub, Settings, Developer settings, GitHub Apps, New): name it uniquely (for example `shipyard-gatekeeper-shrinet82`);
+3. ~~GitHub App~~ done (App ID 5612565, installed on `shipyard-demo`). Original steps: **GitHub App** (GitHub, Settings, Developer settings, GitHub Apps, New): name it uniquely (for example `shipyard-gatekeeper-shrinet82`);
    homepage `https://github.com/Shrinet82/shipyard`; **webhook off**; repository permissions Contents read and write, Pull requests read
    and write, Checks read, Commit statuses read, Issues read (Metadata is added automatically); install only on this account. After
    creating: note the **App ID**, generate a **private key** (a `.pem` downloads), then **Install App** on the repository
