@@ -80,6 +80,9 @@ class Installer:
         self.run = run or (lambda argv, **kw: subprocess.run(argv, capture_output=True, text=True, timeout=60, **kw))
         self.github_check, self.python, self.workdir = github_check or self._github_check, python, workdir
         self.t0 = time.time()
+        self.created: dict[str, list[str]] = {"ops": [], "maintainers": []}
+        self.to_create: dict[str, list[str]] = {"ops": [], "maintainers": []}
+        self.room_labels: dict[str, str] = {}
         self.paths = {"config": home / "shipyard.yaml", "gatekeeper": home / "gatekeeper.json", "mcp": home / "gatekeeper-mcp.token",
                       "coolify": home / "coolify.env", "unit": home / ".config/systemd/user/shipyard-gatekeeper.service"}
 
@@ -132,12 +135,26 @@ class Installer:
         self.say(f"  Switch answers at {url}")
         return gw, env, url, env_file
 
-    def rooms(self, gw: Any) -> dict[str, list[str]]:
+    def rooms(self, gw: Any, project: str) -> dict[str, list[str]]:
+        """Existing rooms are chosen by id or name. Names that do not exist yet are created later (`self.to_create`), once the
+        Gatekeeper is registered: Switch will not make a room without an agent in it."""
         status, rows = gw.call("GET", "/rooms")
         if status != 200 or not isinstance(rows, list):
             raise InitError(f"Switch would not list its rooms ({status})")
         label = lambda r: f"{r['name']} ({r.get('bridge_display_name') or 'room'})"  # noqa: E731
         chosen: dict[str, list[str]] = {"ops": [], "maintainers": []}
+        self.to_create: dict[str, list[str]] = {"ops": [], "maintainers": []}
+        create = str(self.a.get("rooms", {}).get("create", "")).lower() in ("true", "yes", "y")
+        if not rows and self.interactive and "rooms" not in self.a:
+            self.say("  Switch has no rooms yet.")
+            if self._ask(f"Create {project}-ops and {project}-maintainers? (yes/no)", "yes").lower() in ("yes", "y"):
+                self.to_create = {"ops": [f"{project}-ops"], "maintainers": [f"{project}-maintainers"]}
+                self.room_labels = {}
+                return chosen
+        if not rows and not self.interactive and "rooms" not in self.a:
+            self.to_create = {"ops": [f"{project}-ops"], "maintainers": [f"{project}-maintainers"]}
+            self.room_labels = {}
+            return chosen
         for kind, q in (("ops", "ops rooms (alerts, deploys)"), ("maintainers", "maintainers rooms (PRs, digest)")):
             want = self.a.get("rooms", {}).get(kind)
             if want is None and self.interactive:
@@ -147,10 +164,12 @@ class Installer:
                 want = [rows[int(n) - 1]["id"] for n in picked.replace(" ", "").split(",") if n.isdigit() and 0 < int(n) <= len(rows)]
             for item in want or []:
                 hits = [r["id"] for r in rows if item in (r["id"], r["name"])]
-                if not hits:
-                    raise InitError(f"no room called {item!r} in Switch")
+                if not hits and create:
+                    self.to_create[kind].append(item)
+                elif not hits:
+                    raise InitError(f"no room called {item!r} in Switch (add `rooms: {{create: true}}` to make it)")
                 chosen[kind] += [h for h in hits if h not in chosen[kind]]
-        if not chosen["ops"] and not chosen["maintainers"]:
+        if not any(chosen.values()) and not any(self.to_create.values()):
             raise InitError("pick at least one room")
         self.room_labels = {r["id"]: f"#{r['name']} ({r.get('bridge_display_name') or 'room'})" for r in rows}
         return chosen
@@ -243,6 +262,14 @@ class Installer:
         if not self.paths["mcp"].exists():
             _write_secret(self.paths["mcp"], secrets.token_hex(24))
         gw.call("PUT", f"/agents/{reg['id']}/addressing-policy", {"policy": None})        # the Gatekeeper authorizes by itself
+        for kind, names in self.to_create.items():
+            for name in names:
+                status, room = gw.call("POST", "/rooms", {"name": name, "description": f"Shipyard {kind} room", "agent_names": ["gatekeeper"]})
+                if status not in (200, 201) or not isinstance(room, dict) or "id" not in room:
+                    raise InitError(f"Switch would not create the room {name!r} ({status}): {str(room)[:120]}")
+                self.created[kind].append(room["id"])
+                self.room_labels[room["id"]] = f"#{name}"
+                self.say(f"  created room #{name}")
         for room in room_ids:
             status, _ = gw.call("POST", f"/rooms/{room}/agents", {"agent_ids": [reg["id"]]})
             if status not in (200, 201, 204, 409):
@@ -300,27 +327,29 @@ class Installer:
         self.say("1/5 Switch")
         gw, env, url, env_file = self.switch()
         project = self.get("project", "Project name", "demo")
-        rooms = self.rooms(gw)
+        rooms = self.rooms(gw, project)
         self.say("2/5 Coolify")
         cool = self.coolify()
         self.say("3/5 GitHub")
         gh = self.github(cool[2])
-        owner = self.get("owner", "Your chat identity (what `@gatekeeper whoami` prints; blank to add it after)", "")
-        cfg = self.build_config(project, url, env_file, rooms, cool, gh,
-                                bool(self.a.get("dashboard", True)))
-        if owner:
-            cfg["projects"][project]["members"][owner] = "owner"
         if dry_run:
+            planned = {k: rooms[k] + [f"<new: {n}>" for n in self.to_create[k]] for k in rooms}
+            cfg = self.build_config(project, url, env_file, planned, cool, gh, bool(self.a.get("dashboard", True)))
             self.say("dry run: nothing written")
             return cfg
         self.say("4/5 Writing files and registering")
         self.home.mkdir(parents=True, exist_ok=True)
-        self.paths["config"].write_text(yaml.safe_dump(cfg, sort_keys=False))
-        os.chmod(self.paths["config"], 0o600)
         if cool[1]:
             _write_secret(self.paths["coolify"], f"COOLIFY_TOKEN={cool[1]}\n")
-        load_config(self.paths["config"])                                                  # refuse to go on with a config we cannot read
         self.register(gw, env, url, rooms["ops"] + rooms["maintainers"])
+        rooms = {k: rooms[k] + self.created[k] for k in rooms}
+        cfg = self.build_config(project, url, env_file, rooms, cool, gh, bool(self.a.get("dashboard", True)))
+        owner = self.get("owner", "Your chat identity (what `@gatekeeper whoami` prints; blank to add it after)", "")
+        if owner:
+            cfg["projects"][project]["members"][owner] = "owner"
+        self.paths["config"].write_text(yaml.safe_dump(cfg, sort_keys=False))
+        os.chmod(self.paths["config"], 0o600)
+        load_config(self.paths["config"])                                                  # refuse to go on with a config we cannot read
         if self.get("agents.create", "Create the Ops and Repo agents in Switch? (yes/no)", "yes").lower() in ("yes", "y", "true"):
             self.agents(gw)
             self.write_codex_config()

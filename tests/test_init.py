@@ -17,13 +17,19 @@ ROOMS = [{"id": "r-ops-mm", "name": "demo-ops", "bridge_display_name": "Mattermo
 
 
 class FakeGw:
+    rooms = ROOMS
+
     def __init__(self, *a):
         self.calls = []
 
     def call(self, method, path, body=None):
         self.calls.append((method, path, body))
         if method == "GET" and path == "/rooms":
-            return 200, ROOMS
+            return 200, type(self).rooms
+        if method == "POST" and path == "/rooms":
+            if not body["agent_names"]:
+                return 400, "Internal rooms require at least one agent"
+            return 200, {"id": "new-" + body["name"]}
         if method == "GET" and path == "/management/controllers":
             return 200, [{"id": "c1", "name": "build-vm"}]
         return 200, {}
@@ -223,3 +229,40 @@ def test_add_owner_bootstraps_a_new_install_and_validates_the_identity(home):
     fresh = load_config(home / "shipyard.yaml")
     MemberStore(home / "shipyard-members.json", fresh.policy, None).load()
     assert fresh.policy.members["demo"][OWN] is Role.OWNER                          # survives a restart
+
+
+class EmptyGw(FakeGw):
+    rooms = []
+
+
+def test_a_brand_new_switch_gets_its_rooms_created_with_the_gatekeeper_in_them(home):
+    a = answers(home)
+    del a["rooms"]
+    gws = []
+    inst = installer(home, a)
+    inst.gateway = lambda *x: gws.append(EmptyGw()) or gws[-1]
+    inst.install()
+    creates = [c[2] for c in gws[0].calls if c[0] == "POST" and c[1] == "/rooms"]
+    assert [c["name"] for c in creates] == ["demo-ops", "demo-maintainers"] and all(c["agent_names"] == ["gatekeeper"] for c in creates)
+    p = load_config(home / "shipyard.yaml").projects["demo"]
+    assert p.ops_rooms == {"new-demo-ops"} and p.maintainer_rooms == {"new-demo-maintainers"}
+    assert p.room_names["new-demo-ops"] == "#demo-ops"
+
+
+def test_a_named_room_that_does_not_exist_is_created_only_when_asked(home):
+    a = answers(home, rooms={"ops": ["alerts"], "maintainers": ["r-mt"]})
+    with pytest.raises(InitError, match="create: true"):
+        installer(home, a).install()
+    a = answers(home, rooms={"ops": ["alerts"], "maintainers": ["r-mt"], "create": True})
+    inst = installer(home, a)
+    inst.install()
+    assert load_config(home / "shipyard.yaml").projects["demo"].ops_rooms == {"new-alerts"}
+
+
+def test_dry_run_says_which_rooms_it_would_create(home):
+    a = answers(home)
+    del a["rooms"]
+    inst = installer(home, a)
+    inst.gateway = lambda *x: EmptyGw()
+    cfg = inst.install(dry_run=True)
+    assert cfg["projects"]["demo"]["rooms"]["ops"] == ["<new: demo-ops>"] and not (home / "gatekeeper.json").exists()
