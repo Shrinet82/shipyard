@@ -60,14 +60,14 @@ def say(user, text, channel="demo-ops", wait=float(os.environ.get("WAIT", 25))):
     ch = channel_id(tok, channel)
     me = mm("GET", "/users/me", tok=tok)[0]["id"]
     before = mm("GET", f"/channels/{ch}/posts?per_page=1", tok=tok)[0]
-    mm("POST", "/posts", {"channel_id": ch, "message": text}, tok)
+    mine = mm("POST", "/posts", {"channel_id": ch, "message": text}, tok)[0]["create_at"]
     start = time.time()
     seen = set(before["order"])
     quiet_since = time.time()
     while time.time() - start < wait:
         posts = mm("GET", f"/channels/{ch}/posts?per_page=15", tok=tok)[0]
-        new = [i for i in reversed(posts["order"]) if i not in seen and posts["posts"][i]["user_id"] != me
-               and posts["posts"][i]["type"] == "" and "Working" not in posts["posts"][i]["message"]]
+        new = [i for i in reversed(posts["order"]) if i not in seen and posts["posts"][i]["create_at"] > mine
+               and posts["posts"][i]["props"].get("from_bot") and "Working" not in posts["posts"][i]["message"]]
         for i in new:
             seen.add(i)
             print("  >", posts["posts"][i]["message"].replace("\n", "\n    "))
