@@ -33,21 +33,19 @@ USAGE = {
 def parse(body: str, addressed: bool) -> Command | None:
     """Return a command if the message is for the Gatekeeper, else None.
 
-    A message is for the Gatekeeper when it mentions it (`addressed`) or starts with `!`.
+    A message is for the Gatekeeper only when it mentions it (`addressed`). Switch owns the
+    `!` prefix for its own commands, so it is deliberately not used here.
     """
     text = (body or "").strip()
-    if text.startswith("!"):
-        rest = text[1:]
-    elif addressed:
-        rest = _MENTION.sub("", text, count=1)
-    else:
+    if not addressed:
         return None
+    rest = _MENTION.sub("", text, count=1)
     parts = rest.split()
     if not parts:
-        return Command("help", (), text) if addressed else None
+        return Command("help", (), text)
     verb = parts[0].lower()
     if verb not in VERBS:
-        return Command("unknown", tuple(parts[:1]), text) if addressed else None
+        return Command("unknown", tuple(parts[:1]), text)
     return Command(verb, tuple(parts[1:]), text)
 
 

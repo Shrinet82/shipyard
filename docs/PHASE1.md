@@ -8,7 +8,7 @@ Phase 2 does not start until every box in the exit gate at the bottom is checked
    by Switch from the platform account, and message text cannot change it. `shipyard.yaml`
    maps those ids to roles. `@gatekeeper whoami` prints your id so an owner can add you.
 2. **Two ways in, one trust path.**
-   - *Direct commands* typed in chat (`@gatekeeper deploy demo-app`, or `!deploy demo-app`) are
+   - *Direct commands* typed in chat (`@gatekeeper deploy demo-app`) are
      parsed by the Gatekeeper itself. No language model sits between the person and the policy.
    - *Agent proposals*: an agent calls the Gatekeeper's MCP tool `request_action` and must cite
      the `message_id` of the human message it is acting on. The Gatekeeper checks that message
@@ -24,7 +24,7 @@ Phase 2 does not start until every box in the exit gate at the bottom is checked
    write credentials; the Gatekeeper holds the Coolify write token.
 6. **Switch addressing policy.** `shipyard sync-addressing` (run by the owner, using the
    Gateway admin login) restricts who may address each agent to the project's members.
-7. **Chat grammar.** Commands work as a mention (`@gatekeeper status`) or with a `!` prefix.
+7. **Chat grammar.** Commands are a mention: `@gatekeeper status`. Switch owns the `!` prefix for its own commands (it answers "Unknown command" itself), so `!` is not used.
 
 ## Work items
 

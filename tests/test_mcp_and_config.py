@@ -96,9 +96,9 @@ def test_a_room_cannot_belong_to_two_projects(tmp_path):
 
 
 @pytest.mark.parametrize("body,addressed,verb", [
-    ("!deploy demo-app", False, "deploy"), ("@gatekeeper deploy demo-app", True, "deploy"),
+    ("!deploy demo-app", False, None), ("@gatekeeper deploy demo-app", True, "deploy"),
     ("<@&99> status", True, "status"), ("<@!99>: rollback demo-app 1.2", True, "rollback"),
-    ("deploy demo-app", False, None), ("@gatekeeper blah", True, "unknown"), ("!blah", False, None),
+    ("deploy demo-app", False, None), ("@gatekeeper blah", True, "unknown"), ("!blah", True, "unknown"),
 ])
 def test_parse(body, addressed, verb):
     cmd = parse(body, addressed)

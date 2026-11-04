@@ -87,7 +87,7 @@ class Service:
         if cmd.verb == "unknown":
             return "I did not understand that. Try `help`."
         if cmd.verb == "help":
-            return "Commands: " + ", ".join(USAGE[v] for v in USAGE) + ". Start with `!` or mention me."
+            return "Commands: " + ", ".join(USAGE[v] for v in USAGE) + ". Mention me first, e.g. `@gatekeeper deploy demo-app`."
         if not arity_ok(cmd):
             return f"Usage: {USAGE[cmd.verb]}"
         if cmd.verb == "whoami":
@@ -172,7 +172,7 @@ class Service:
         what = f"{verb} {target}" + (f" {args['tag']}" if args.get("tag") else "")
         by = f"{agent} proposes, for {who}" if agent else f"requested by {who}"
         return (f"Approval needed (id {approval_id}): {what}, {by}. An owner, or another maintainer, can reply "
-                f"`!approve {approval_id}`. `!deny {approval_id}` cancels. It expires in {minutes} minutes.")
+                f"`@gatekeeper approve {approval_id}`. `@gatekeeper deny {approval_id}` cancels. It expires in {minutes} minutes.")
 
     def _approval_reply(self, project: Project, room: str, sender: str, cmd: Command) -> str:
         approval_id = cmd.args[0].lower()

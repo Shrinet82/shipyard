@@ -88,6 +88,8 @@ def env(tmp_path):
     def say(sender, body, addressed=False, room=ROOM, kind=None, name=None):
         e.n += 1
         mid = f"sw_{e.n}"
+        if body.startswith("!"):                      # tests write "!verb"; the real grammar is a mention
+            body, addressed = "@gatekeeper " + body[1:], True
         e.svc.handle_event({"type": "message", "room_id": room, "payload": {
             "message_id": mid, "sender": sender, "sender_name": name or sender.split("-")[-1].split(":")[0],
             "sender_kind": kind, "body": body, "addressed": addressed}})
