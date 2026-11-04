@@ -121,8 +121,8 @@ class CoolifyMcp:
 
     def container_logs(self, uuid: str, lines: int = 100) -> list[str]:
         out = self.tool("get_logs", {"resource": "application", "uuid": uuid, "lines": lines})
-        if isinstance(out, dict):
-            out = out.get("logs") or out.get("output") or json.dumps(out)
+        if isinstance(out, dict):          # {"ok": true, "logs": "...", ...}: an empty log is empty, not the wrapper
+            out = out["logs"] if "logs" in out else (out.get("output") or "")
         return str(out).splitlines()
 
     # -- operations -----------------------------------------------------------

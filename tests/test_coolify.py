@@ -83,3 +83,12 @@ def test_tool_errors_and_outages_raise(monkeypatch):
     monkeypatch.setattr(c, "_rpc", boom)
     with pytest.raises(CoolifyError):
         c.tool("deploy", {})
+
+
+def test_container_logs_unwrap_the_reply_and_an_empty_log_is_empty():
+    c = adapter({"get_logs": {"ok": True, "resource": "application", "logs": "line 1\nline 2", "redacted": True}})
+    assert c.container_logs("u1") == ["line 1", "line 2"]
+    c = adapter({"get_logs": {"ok": True, "resource": "application", "uuid": "u", "lines": 63, "logs": "", "redacted": True}})
+    assert c.container_logs("u1") == []
+    c = adapter({"get_logs": "plain text\nlog"})
+    assert c.container_logs("u1") == ["plain text", "log"]
