@@ -80,9 +80,12 @@ class CoolifyMcp:
         if result.get("isError"):
             raise CoolifyError(text[:200] or f"{name} failed")
         try:
-            return json.loads(text)
+            value = json.loads(text)
         except ValueError:
             return text
+        if isinstance(value, dict) and isinstance(value.get("data"), (dict, list)):
+            return value["data"]          # Coolify wraps replies in {"data": ...}
+        return value
 
     # -- operations -----------------------------------------------------------
 
