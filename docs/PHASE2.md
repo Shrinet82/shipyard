@@ -91,7 +91,7 @@ A tiny web app with a `Dockerfile` and a GitHub Actions workflow that runs a uni
 ## Exit gate
 
 - [x] Break a build on purpose: an alert appears in the ops room (Mattermost and Discord), the Ops Agent
-      diagnoses in three lines with options, and a rollback approved in chat restores the app. (Rollback run on Mattermost; alerts and diagnosis seen on both.)
+      diagnoses in three lines with options, and a rollback approved in chat restores the app. (Rollback run on Mattermost; alerts and diagnosis seen on both; the merge flow also run on Discord.)
 - [x] `merge 6` goes through checks, approval, merge and deploy; `merge 4` and `merge 5` are refused with reasons.
 - [x] PR alerts for opened, CI result and conflict; a stale alert at a shortened threshold.
 - [x] `@gatekeeper digest` answers on demand, and the scheduled digest posts (verified with a near-term schedule).
@@ -135,6 +135,7 @@ state (finished, running). On Discord a plain `@ops-agent` in the Gatekeeper's m
 | Stale threshold lowered to 36 s | one stale alert per open PR (#5, #4, #1), not repeated |
 | Digest scheduled two minutes ahead | sent at 20:01:17 IST; `@gatekeeper digest` answers on demand |
 | Real settings restored | stale 48 h, digest 09:00 IST |
+| Discord, owner: `merge 1`, then self-approval | merged by the app's bot account (7032edb); audit shows request, approval, merge and the deploy marked as triggered by the merge; the app then served `/health` |
 
 After the broken merge, `main` was repaired with a revert commit on the demo repo so later merges deploy cleanly.
 
