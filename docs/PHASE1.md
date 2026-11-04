@@ -51,11 +51,45 @@ Phase 2 does not start until every box in the exit gate at the bottom is checked
 - A proposal that cites someone else's message, an old message, a message that does not name
   the target, or the same message twice.
 
+## Findings
+
+- **Switch owns the `!` prefix.** `!whoami` is answered by Switch itself ("Unknown command") and is
+  never delivered as a message. The grammar is therefore a mention: `@gatekeeper deploy demo-app`.
+- **Addressing policy `users` holds the ExternalUser row id**, not the sender string. For a platform
+  account, Switch compares the rule against its internal ExternalUser id. `scripts/sync_addressing.py`
+  translates members through `GET /gateway/collaborations/{bridge}/users`. Members who have never
+  posted in a bridged channel have no row yet and are reported as unresolved.
+- **A real Codex agent can cite the right message id.** Switch shows the agent the triggering message's
+  id; with instructions to use `request_action`, the Ops Agent produced the proposal on the first try.
+- **Coolify wraps replies in `{"data": ...}`**; the adapter unwraps it. Rollback images come from
+  `list_rollback_images` as `{current, images: [{tag, is_current}]}`.
+- **An agent that refuses on its own writes no audit row**, because it never reached the Gatekeeper.
+  Only requests that arrive are audited.
+- Coolify's `get_logs` needs the Read Sensitive ability, so a Read-only token cannot read logs.
+  Plan: the Gatekeeper serves logs as a read-tier action (Phase 2), with redaction.
+
+## Results (Nov 4, 2026, Mattermost with three test accounts, live on the build VM)
+
+| Step | Result |
+|---|---|
+| Viewer: `deploy demo-app` | Denied: needs role deployer or above |
+| Deployer: `deploy demo-app` | Ran, deployment queued in Coolify |
+| Deployer: `rollback demo-app` | Approval needed (id shown) |
+| Deployer and viewer try to approve | Both denied: approver not authorized |
+| Owner approves | Rollback to `alpine` queued, "approved by sy-owner" |
+| `@gatekeeper audit` | All of the above, in order, with who and why |
+| `@ops-agent please restart demo-app` (deployer) | Approval needed, "ops-agent proposes, for sy-deployer"; ran only after the owner approved |
+| Guest (not a member) addresses `@ops-agent` | Refused by Switch's addressing policy |
+| Injection: `deploy demo-app; rm -rf /`, bad tag, `$(id)` | Refused, never reached Coolify |
+| Prompt injection aimed at the agent | Nothing deployed |
+| Coolify stopped, deployer deploys | "Failed ... Nothing was changed" |
+| `kill -9` on the Gatekeeper | Restarted by systemd within 6 s; MCP refused connections while down |
+
 ## Exit gate
 
-- [ ] A viewer is refused a deploy; a deployer's deploy runs; a rollback needs and gets an
+- [x] A viewer is refused a deploy; a deployer's deploy runs; a rollback needs and gets an
       owner's approval; all three appear in the audit log (shown with `@gatekeeper audit`).
-- [ ] The same flow works on Mattermost (test accounts for each role) and on Discord (owner).
-- [ ] An agent proposal ("@ops-agent deploy demo-app") waits for a human approval, then runs.
-- [ ] All attack cases above pass as automated tests, and the live ones are run once by hand.
-- [ ] Gatekeeper restarts by itself after a crash, and actions fail closed while it is down.
+- [ ] The same flow works on Discord (owner). Mattermost: done with a test account per role.
+- [x] An agent proposal ("@ops-agent restart demo-app") waits for a human approval, then runs.
+- [x] All attack cases above pass as automated tests (115 tests), and the live ones were run by hand.
+- [x] Gatekeeper restarts by itself after a crash, and actions fail closed while it is down.
