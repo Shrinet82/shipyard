@@ -29,6 +29,7 @@ class Config:
     mcp_port: int = 8765
     mcp_token_file: str = "~/gatekeeper-mcp.token"
     db_path: str = "~/shipyard.db"
+    known_agents: frozenset[str] = frozenset({"ops-agent", "repo-agent"})
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
 
     def project_for_room(self, room_id: str) -> Project | None:
@@ -86,6 +87,7 @@ def load_config(path: str | Path) -> Config:
         mcp_port=int(gk.get("mcp_port", 8765)),
         mcp_token_file=gk.get("mcp_token_file", "~/gatekeeper-mcp.token"),
         db_path=gk.get("db_path", "~/shipyard.db"),
+        known_agents=frozenset(gk.get("known_agents", ["ops-agent", "repo-agent"])),
         raw=raw,
     )
 

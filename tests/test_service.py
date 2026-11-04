@@ -190,15 +190,24 @@ def test_unknown_app_denied_before_any_approval_is_created(env):
     assert env.gk.db.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
 
 
-def test_an_agent_saying_approve_changes_nothing(env):
+def test_an_agent_saying_approve_changes_nothing_and_is_not_answered(env):
     env.say(DEPLOYER, "!rollback demo-app")
     aid = approval_id(env)
-    env.say(AGENT, f"!approve {aid}", name="ops-agent")       # not a member
-    assert env.last().startswith("Denied") and not env.coolify.calls
+    n = len(env.posts)
+    env.say(AGENT, f"!approve {aid}", name="ops-agent")
     env.say(AGENT, f"@gatekeeper approve {aid}", addressed=True, name="ops-agent")
-    assert not env.coolify.calls
-    env.say(OWNER, f"!approve {aid}")                          # the real approval still works
+    env.say(AGENT, "@gatekeeper restart", addressed=True, name="ops-agent")      # chatter: no usage reply
+    assert len(env.posts) == n and not env.coolify.calls                         # never answered
+    assert any(r["event"] == "denied" and "agents cannot" in r["detail"]["reason"] for r in env.gk.audit.recent("demo", 10))
+    env.say(OWNER, f"!approve {aid}")                                            # the real approval still works
     assert env.coolify.calls
+
+
+def test_an_unknown_human_who_tries_to_approve_is_refused_and_told(env):
+    env.say(DEPLOYER, "!rollback demo-app")
+    aid = approval_id(env)
+    env.say(STRANGER, f"!approve {aid}")
+    assert env.last().startswith("Denied") and not env.coolify.calls
 
 
 def test_approval_cannot_be_reused_or_applied_to_another_action(env):

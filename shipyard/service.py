@@ -80,6 +80,13 @@ class Service:
         sender = p.get("sender", "")
         if p.get("sender_kind") is not None:      # the Switch app itself, never a person
             return
+        if p.get("sender_name") in self.cfg.known_agents:
+            # Agents act only through request_action. Their chat is never a command, and never answered;
+            # an attempt to approve is the one thing worth a record.
+            if cmd.verb in ("approve", "deny"):
+                self.gk.audit.write(project=project.name, actor=sender, event="denied", action=cmd.verb, target="",
+                                    reason="agents cannot approve or deny", name=p.get("sender_name"))
+            return
         try:
             reply = self._dispatch(project, room, sender, cmd)
         except Exception as exc:                  # fail closed: say so, change nothing

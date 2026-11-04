@@ -63,6 +63,8 @@ Phase 2 does not start until every box in the exit gate at the bottom is checked
   id; with instructions to use `request_action`, the Ops Agent produced the proposal on the first try.
 - **Coolify wraps replies in `{"data": ...}`**; the adapter unwraps it. Rollback images come from
   `list_rollback_images` as `{current, images: [{tag, is_current}]}`.
+- **Agents are never answered as people.** The Gatekeeper ignores chat from known agents (`known_agents` in
+  its config); only an attempt to approve or deny is audited. Without this it replied "Usage" to an agent.
 - **An agent that refuses on its own writes no audit row**, because it never reached the Gatekeeper.
   Only requests that arrive are audited.
 - Coolify's `get_logs` needs the Read Sensitive ability, so a Read-only token cannot read logs.
@@ -82,6 +84,8 @@ Phase 2 does not start until every box in the exit gate at the bottom is checked
 | Guest (not a member) addresses `@ops-agent` | Refused by Switch's addressing policy |
 | Injection: `deploy demo-app; rm -rf /`, bad tag, `$(id)` | Refused, never reached Coolify |
 | Prompt injection aimed at the agent | Nothing deployed |
+| Discord, owner: `whoami`, `deploy`, `audit`, rollback with self-approval, `@ops-agent please restart` approved in chat | All as designed; the owner's role and id were recognised |
+| Typing `@ops-agent approve <id>` instead of `@gatekeeper` | The agent refused to approve its own request and named the right command |
 | Coolify stopped, deployer deploys | "Failed ... Nothing was changed" |
 | `kill -9` on the Gatekeeper | Restarted by systemd within 6 s; MCP refused connections while down |
 
@@ -89,7 +93,7 @@ Phase 2 does not start until every box in the exit gate at the bottom is checked
 
 - [x] A viewer is refused a deploy; a deployer's deploy runs; a rollback needs and gets an
       owner's approval; all three appear in the audit log (shown with `@gatekeeper audit`).
-- [ ] The same flow works on Discord (owner). Mattermost: done with a test account per role.
+- [x] The same flow works on Discord (owner) and on Mattermost (a test account per role).
 - [x] An agent proposal ("@ops-agent restart demo-app") waits for a human approval, then runs.
 - [x] All attack cases above pass as automated tests (115 tests), and the live ones were run by hand.
 - [x] Gatekeeper restarts by itself after a crash, and actions fail closed while it is down.
