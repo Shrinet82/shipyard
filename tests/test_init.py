@@ -287,3 +287,15 @@ def test_the_real_http_helper_copes_with_html_and_json_and_errors():
     srv.shutdown()
     with pytest.raises(InitError, match="cannot reach"):
         _http("GET", "http://127.0.0.1:1/", timeout=1)
+
+
+def test_rerunning_without_room_answers_reuses_the_conventional_rooms(home):
+    class Existing(FakeGw):
+        rooms = [{"id": "e-ops", "name": "demo-ops", "bridge_display_name": "Mattermost"}, {"id": "e-mt", "name": "demo-maintainers", "bridge_display_name": "Mattermost"}]
+    a = answers(home)
+    del a["rooms"]
+    inst = installer(home, a)
+    inst.gateway = lambda *x: Existing()
+    inst.install()
+    p = load_config(home / "shipyard.yaml").projects["demo"]
+    assert p.ops_rooms == {"e-ops"} and p.maintainer_rooms == {"e-mt"}

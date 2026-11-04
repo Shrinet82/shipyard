@@ -154,9 +154,14 @@ class Installer:
                 self.to_create = {"ops": [f"{project}-ops"], "maintainers": [f"{project}-maintainers"]}
                 self.room_labels = {}
                 return chosen
-        if not rows and not self.interactive and "rooms" not in self.a:
-            self.to_create = {"ops": [f"{project}-ops"], "maintainers": [f"{project}-maintainers"]}
-            self.room_labels = {}
+        if not self.interactive and "rooms" not in self.a:         # the conventional names: use them if they exist, else make them
+            for kind in chosen:
+                name = f"{project}-{kind}"
+                hits = [r["id"] for r in rows if r["name"] == name]
+                chosen[kind] += hits
+                if not hits:
+                    self.to_create[kind].append(name)
+            self.room_labels = {r["id"]: f"#{r['name']} ({r.get('bridge_display_name') or 'room'})" for r in rows}
             return chosen
         for kind, q in (("ops", "ops rooms (alerts, deploys)"), ("maintainers", "maintainers rooms (PRs, digest)")):
             want = self.a.get("rooms", {}).get(kind)
