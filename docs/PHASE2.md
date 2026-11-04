@@ -105,7 +105,7 @@ A tiny web app with a `Dockerfile` and a GitHub Actions workflow that runs a uni
 | 1 to 3 | Config, webhook listener, evidence and redaction | done, 183 tests |
 | 4 | Alert and Ops Agent wake-up | **verified live** on Mattermost and Discord with a real-shaped webhook sent across the VPC |
 | 5 to 9 | GitHub client, poller, repo reads, merge, digest | built and tested against fakes; **waiting for the GitHub App** to run live |
-| 10 | Demo repo, five PRs, Coolify app `demo-web` | repo and PRs exist, app deployed; **GitHub Actions does not run for the repo** (see below) |
+| 10 | Demo repo, five PRs, Coolify app `demo-web` | done; CI runs and gives the intended results on every PR |
 | 11 | Read-only Coolify token | waiting for the token |
 
 Live results: a wrong webhook secret gets 404; the real event gets 200; the alert shows the last lines of the actual build log,
@@ -114,9 +114,10 @@ state (finished, running). On Discord a plain `@ops-agent` in the Gatekeeper's m
 
 ## Findings while building
 
-- **GitHub Actions never ran** for `shipyard-demo`: zero runs and no Actions check suite, even for a plain push to `main`, with
-  Actions enabled for the repo and GitHub reporting no incident. The only check on a PR is GitGuardian, a scanner already on the
-  account. This blocks "CI green". It needs a look at the repo's Actions tab and the account's Actions settings.
+- **GitHub Actions had to be enabled by hand.** Until the owner opened the repo's Actions tab and enabled workflows there were
+  zero runs (the API said "enabled", but nothing fired, even on a plain push). After enabling and reopening the PRs, CI ran:
+  #1 passed, #2 passed (the Docker break is invisible to the unit tests, as intended), #6 passed, #4 failed (intended). #5 has no run:
+  GitHub does not run `pull_request` workflows on a PR that conflicts with its base, so the conflict is the only signal.
 - A change on the line next to one that main changed also conflicts (git compares whole hunks), so demo PRs must be based on the
   current `main` unless a conflict is intended.
 - Creating a Discord channel through Switch needs an explicit `channel_type` (`channel_public`).
@@ -126,8 +127,7 @@ state (finished, running). On Discord a plain `@ops-agent` in the Gatekeeper's m
 
 ## What the owner has to do (the Gatekeeper cannot)
 
-1. **GitHub Actions.** Open https://github.com/Shrinet82/shipyard-demo/actions and report what it shows (a banner usually says why).
-   Also check https://github.com/settings/billing for any Actions restriction.
+1. ~~GitHub Actions~~ done: enabled on the Actions tab.
 2. **Coolify, Settings, Advanced:** add `172.31.10.178` to "webhook allowed internal hosts" and save. Then **Notifications, Webhook:**
    enable it, paste the URL from `python -m shipyard webhook-url --host 172.31.10.178` (run on the build VM), and tick
    Deployment failure and Status change.
