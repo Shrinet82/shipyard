@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,30 @@ class RepoCfg:
     merge_method: str = "squash"
 
 
+_K8S_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
+
+
+@dataclass(frozen=True)
+class K8sApp:
+    namespace: str
+    deployment: str
+
+
+@dataclass(frozen=True)
+class HostCfg:
+    ssh: str                           # user@address of the forced-command account
+    key_file: str
+    port: int = 22
+
+
+@dataclass(frozen=True)
+class KubeCfg:
+    kubeconfigs: dict[str, str]        # viewer / deployer / ops -> kubeconfig path
+    kubectl: str = "kubectl"
+    max_replicas: int = 10
+    timeout: float = 30.0
+
+
 @dataclass(frozen=True)
 class Project:
     name: str
@@ -27,10 +52,18 @@ class Project:
     apps: dict[str, str]               # app name -> Coolify application uuid
     repo: RepoCfg | None = None
     github_logins: dict[str, str] = field(default_factory=dict)   # sender id -> GitHub login
+    k8s_apps: dict[str, K8sApp] = field(default_factory=dict)     # app name -> Kubernetes deployment
 
     @property
     def rooms(self) -> frozenset[str]:
         return self.ops_rooms | self.maintainer_rooms
+
+    @property
+    def app_names(self) -> list[str]:
+        return sorted([*self.apps, *self.k8s_apps])
+
+    def backend_of(self, name: str) -> str | None:
+        return "coolify" if name in self.apps else "k8s" if name in self.k8s_apps else None
 
 
 @dataclass(frozen=True)
@@ -73,6 +106,8 @@ class Config:
     github: GithubCfg = GithubCfg()
     alerts: AlertCfg = AlertCfg()
     digest: DigestCfg = DigestCfg()
+    hosts: dict[str, HostCfg] = field(default_factory=dict)
+    kube: KubeCfg | None = None
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
 
     def project_for_room(self, room_id: str) -> Project | None:
@@ -129,7 +164,18 @@ def load_config(path: str | Path) -> Config:
     raw = yaml.safe_load(Path(path).read_text())
     projects = {}
     for name, spec in (raw.get("projects") or {}).items():
-        apps = {str(k): str(v) for k, v in (spec.get("apps") or {}).items()}
+        apps, k8s_apps = {}, {}
+        for app, v in (spec.get("apps") or {}).items():
+            app = str(app)
+            if isinstance(v, dict) and v.get("backend") == "k8s":
+                ns, dep = str(v.get("namespace", "")), str(v.get("deployment", ""))
+                if not _K8S_NAME.match(ns) or not _K8S_NAME.match(dep):
+                    raise ValueError(f"app {app!r}: namespace and deployment must be valid Kubernetes names")
+                k8s_apps[app] = K8sApp(ns, dep)
+            elif isinstance(v, dict):
+                apps[app] = str(v["uuid"])
+            else:
+                apps[app] = str(v)
         ops, maint = _rooms(spec.get("rooms"))
         repo = None
         if spec.get("repo"):
@@ -142,13 +188,20 @@ def load_config(path: str | Path) -> Config:
             if repo.merge_method not in ("merge", "squash", "rebase"):
                 raise ValueError("merge_method must be merge, squash or rebase")
         projects[name] = Project(name, ops, maint, apps, repo,
-                                 {str(k): str(v) for k, v in (spec.get("github_logins") or {}).items()})
+                                 {str(k): str(v) for k, v in (spec.get("github_logins") or {}).items()}, k8s_apps)
     rooms = [r for p in projects.values() for r in p.rooms]
     if len(rooms) != len(set(rooms)):
         raise ValueError("a room may belong to only one project")
     for p in projects.values():
         if p.ops_rooms & p.maintainer_rooms:
             raise ValueError("a room cannot be both an ops room and a maintainers room")
+    hosts = {str(n): HostCfg(str(h["ssh"]), str(h["key_file"]), int(h.get("port", 22))) for n, h in (raw.get("hosts") or {}).items()}
+    k = raw.get("kubernetes")
+    kube = KubeCfg({str(r): str(f) for r, f in (k.get("kubeconfigs") or {}).items()}, str(k.get("kubectl", "kubectl")),
+                   int(k.get("max_replicas", 10)), float(k.get("timeout", 30))) if k else None
+    for p in projects.values():
+        if p.k8s_apps and kube is None:
+            raise ValueError("Kubernetes apps need a `kubernetes:` block with kubeconfigs")
     switch, coolify, gk = raw.get("switch") or {}, raw.get("coolify") or {}, raw.get("gatekeeper") or {}
     gh, al, dg = raw.get("github") or {}, raw.get("alerts") or {}, raw.get("digest") or {}
     return Config(
@@ -168,6 +221,8 @@ def load_config(path: str | Path) -> Config:
         alerts=AlertCfg(al.get("secret_file", "~/gatekeeper-webhook.secret"), al.get("bind", "0.0.0.0"),
                         int(al.get("port", 8766)), int(al.get("evidence_lines", 40)), al.get("agent", "ops-agent")),
         digest=DigestCfg(int(dg.get("hour", 9)), int(dg.get("minute", 0)), dg.get("timezone", "Asia/Kolkata")),
+        hosts=hosts,
+        kube=kube,
         raw=raw,
     )
 

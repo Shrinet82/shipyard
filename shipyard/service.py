@@ -18,8 +18,22 @@ from .evidence import clean_lines, fenced
 from .digest import build_digest
 from .gatekeeper import Gatekeeper
 from .github import GitHubError
+from .hostshell import ShellError
+from .kube import KubeError
 from .policy import Verdict, evaluate
+from .shellrules import Refused, check_host, check_pod
 
+# commands that act on an app: the action depends on the app's backend
+APP_ACTIONS = {
+    ("status", "coolify"): "coolify.status", ("status", "k8s"): "k8s.status",
+    ("logs", "coolify"): "coolify.logs", ("logs", "k8s"): "k8s.logs",
+    ("events", "coolify"): "coolify.history", ("events", "k8s"): "k8s.events",
+    ("deploy", "coolify"): "coolify.deploy",
+    ("restart", "coolify"): "coolify.restart", ("restart", "k8s"): "k8s.restart",
+    ("rollback", "coolify"): "coolify.rollback", ("rollback", "k8s"): "k8s.rollback",
+    ("scale", "k8s"): "k8s.scale",
+}
+READ_ACTIONS = {"coolify.status", "coolify.logs", "coolify.history", "k8s.status", "k8s.logs", "k8s.events"}
 ACTION_FOR_VERB = {
     "merge": "repo.merge",
     "prs": "repo.pr_list",
@@ -39,8 +53,10 @@ CACHE_LIMIT = 500
 
 class Service:
     def __init__(self, cfg: Config, gk: Gatekeeper, coolify: Any, post: Callable[[str, str], None],
-                 agent_name: str = "gatekeeper", now: Callable[[], float] = time.time, github: Any = None):
+                 agent_name: str = "gatekeeper", now: Callable[[], float] = time.time, github: Any = None,
+                 kube: Any = None, hostshell: Any = None):
         self.cfg, self.gk, self.coolify, self.post, self.github = cfg, gk, coolify, post, github
+        self.kube, self.hostshell = kube, hostshell
         self.agent_name = agent_name
         self.now = now
         self.names: dict[str, str] = {}
@@ -122,6 +138,10 @@ class Service:
             return self._status(project, room, sender, cmd)
         if cmd.verb in ("prs", "pr", "digest"):
             return self._repo_read(project, room, sender, cmd)
+        if cmd.verb in ("logs", "events"):
+            return self._read_ops(project, room, sender, cmd)
+        if cmd.verb in ("shell", "exec"):
+            return self._shell_exec(project, room, sender, cmd)
         if cmd.verb == "merge":
             return self._merge(project, room, sender, cmd)
         return self._change(project, room, sender, cmd)
@@ -132,23 +152,43 @@ class Service:
         """Common checks before touching an app. Returns a refusal message, or None."""
         if not self._is_member(project, sender):
             return self._deny(project, sender, action, target, "you are not a member of this project")
-        if action != "audit.read" and target not in project.apps:
+        if action != "audit.read" and project.backend_of(target) is None:
             return self._deny(project, sender, action, target, f"unknown app {target!r}")
         return None
 
     def _status(self, project: Project, room: str, sender: str, cmd: Command) -> str:
-        targets = list(cmd.args) or sorted(project.apps)
+        targets = list(cmd.args) or project.app_names
         lines = []
         for target in targets:
-            refusal = self._guard(project, sender, "coolify.status", target)
+            backend = project.backend_of(target)
+            action = APP_ACTIONS.get(("status", backend)) or "coolify.status"
+            refusal = self._guard(project, sender, action, target)
             if refusal:
                 return refusal
-            out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action="coolify.status",
+            out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action=action,
                                          target=target, room_id=room, name=self._name(sender))
             if out.status != "allowed":
                 return f"Denied: {out.reason}."
-            lines.append(self._run(project, sender, "coolify.status", target, {}))
+            lines.append(self._run(project, sender, action, target, {}))
         return "\n".join(lines)
+
+    def _read_ops(self, project: Project, room: str, sender: str, cmd: Command) -> str:
+        """logs and events: reads, the same words for every backend."""
+        target = cmd.args[0]
+        args: dict[str, Any] = {}
+        if cmd.verb == "logs" and len(cmd.args) > 1:
+            if not (cmd.args[1].isdigit() and 1 <= int(cmd.args[1]) <= 200):
+                return f"Usage: {USAGE['logs']} (lines from 1 to 200)"
+            args["lines"] = cmd.args[1]
+        action = APP_ACTIONS.get((cmd.verb, project.backend_of(target)), "")
+        refusal = self._guard(project, sender, action or f"{cmd.verb}", target)
+        if refusal:
+            return refusal
+        out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action=action, target=target,
+                                     args=args, room_id=room, name=self._name(sender))
+        if out.status != "allowed":
+            return f"Denied: {out.reason}."
+        return self._run(project, sender, action, target, args)
 
     def _audit(self, project: Project, sender: str, cmd: Command) -> str:
         if not self._is_member(project, sender):
@@ -294,9 +334,20 @@ class Service:
     # -- change commands ------------------------------------------------------
 
     def _change(self, project: Project, room: str, sender: str, cmd: Command) -> str:
-        action = ACTION_FOR_VERB[cmd.verb]
         target = cmd.args[0]
-        args = {"tag": cmd.args[1]} if len(cmd.args) > 1 else {}
+        backend = project.backend_of(target)
+        action = APP_ACTIONS.get((cmd.verb, backend))
+        if backend is not None and action is None:
+            if not self._is_member(project, sender):
+                return self._deny(project, sender, cmd.verb, target, "you are not a member of this project")
+            hint = {"deploy": "use `restart` or `rollback`", "scale": "scaling is for Kubernetes apps"}.get(cmd.verb, "")
+            return f"`{cmd.verb}` is not supported for {target} ({backend} app)" + (f": {hint}." if hint else ".")
+        action = action or f"coolify.{cmd.verb}"
+        args: dict[str, Any] = {}
+        if cmd.verb == "rollback" and len(cmd.args) > 1:
+            args["tag"] = cmd.args[1]
+        if cmd.verb == "scale":
+            args["replicas"] = cmd.args[1]
         refusal = self._guard(project, sender, action, target)
         if refusal:
             return refusal
@@ -308,11 +359,45 @@ class Service:
             return self._prompt(out.approval_id, action, target, args, self._name(sender))
         return self._run(project, sender, action, target, args)
 
+    def _shell_exec(self, project: Project, room: str, sender: str, cmd: Command) -> str:
+        """`shell <host> <command>` and `exec <app> <command>`: owner only, always approved, allowlisted twice."""
+        target, argv = cmd.args[0], list(cmd.args[1:])
+        action = "ops.shell" if cmd.verb == "shell" else "ops.exec"
+        if not self._is_member(project, sender):
+            return self._deny(project, sender, action, target, "you are not a member of this project")
+        if cmd.verb == "shell" and target not in self.cfg.hosts:
+            return self._deny(project, sender, action, target, f"unknown host {target!r}", name=self._name(sender))
+        if cmd.verb == "exec" and project.backend_of(target) != "k8s":
+            return self._deny(project, sender, action, target, f"exec works on Kubernetes apps, and {target!r} is not one",
+                              name=self._name(sender))
+        command = " ".join(argv)
+        d = evaluate(self.cfg.policy, project=project.name, identity=sender, is_human=True, action=action, target=target,
+                     args={"command": command})
+        if d.verdict is Verdict.DENY:                       # the role is checked first: others learn nothing about the allowlist
+            return self._deny(project, sender, action, target, d.reason, name=self._name(sender), command=command[:80])
+        try:
+            (check_host if cmd.verb == "shell" else check_pod)(argv)
+        except Refused as exc:
+            return self._deny(project, sender, action, target, str(exc), name=self._name(sender), command=command[:80])
+        args = {"argv": argv, "command": command}
+        out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action=action, target=target,
+                                     args=args, room_id=room, name=self._name(sender), command=command[:80])
+        if out.status == "denied":
+            return f"Denied: {out.reason}."
+        if out.status == "awaiting_approval":
+            return self._prompt(out.approval_id, action, target, args, self._name(sender))
+        return self._run(project, sender, action, target, args)
+
     def _prompt(self, approval_id: str | None, action: str, target: str, args: dict, who: str, agent: str | None = None,
                 extra: str = "") -> str:
         minutes = self.cfg.policy.approval_timeout_seconds // 60
         verb = action.split(".", 1)[1]
-        what = f"{verb} {'PR #' if verb == 'merge' else ''}{target}" + (f" {args['tag']}" if args.get("tag") else "") + extra
+        what = f"{verb} {'PR #' if verb == 'merge' else ''}{target}" + (f" {args['tag']}" if args.get("tag") else "")
+        if args.get("argv"):
+            what += ": " + " ".join(args["argv"])
+        if args.get("replicas") is not None:
+            what += f" {args['replicas']}"
+        what += extra
         by = f"{agent} proposes, for {who}" if agent else f"requested by {who}"
         return (f"Approval needed (id {approval_id}): {what}, {by}. An owner, or another maintainer, can reply "
                 f"`@gatekeeper approve {approval_id}`. `@gatekeeper deny {approval_id}` cancels. It expires in {minutes} minutes.")
@@ -334,30 +419,67 @@ class Service:
 
     # -- execution ------------------------------------------------------------
 
+    def _execute(self, project: Project, action: str, target: str, args: dict[str, Any]) -> tuple[str, list[str] | None]:
+        """Run one action on its backend. Returns (summary, output lines or None)."""
+        if action.startswith("coolify."):
+            uuid = project.apps[target]
+            if action == "coolify.status":
+                return self.coolify.status(uuid), None
+            if action == "coolify.deploy":
+                return self.coolify.deploy(uuid), None
+            if action == "coolify.restart":
+                return self.coolify.restart(uuid), None
+            if action == "coolify.rollback":
+                return self.coolify.rollback(uuid, args.get("tag")), None
+            if action == "coolify.logs":
+                return "", self.coolify.container_logs(uuid, int(args.get("lines", 40)) + 60)
+            if action == "coolify.history":
+                return "", self.coolify.deployment_history(uuid)
+        if action.startswith("k8s.") or action == "ops.exec":
+            if self.kube is None:
+                raise KubeError("Kubernetes is not configured")
+            app = project.k8s_apps[target]
+            if action == "k8s.status":
+                return self.kube.status(app.namespace, app.deployment), None
+            if action == "k8s.logs":
+                return "", self.kube.logs(app.namespace, app.deployment, int(args.get("lines", 40)))
+            if action == "k8s.events":
+                return "", self.kube.events(app.namespace, app.deployment)
+            if action == "k8s.restart":
+                return self.kube.restart(app.namespace, app.deployment), None
+            if action == "k8s.rollback":
+                return self.kube.rollback(app.namespace, app.deployment, args.get("tag")), None
+            if action == "k8s.scale":
+                return self.kube.scale(app.namespace, app.deployment, str(args.get("replicas", ""))), None
+            if action == "ops.exec":
+                return "", self.kube.exec(app.namespace, app.deployment, args.get("argv", []))
+        if action == "ops.shell":
+            if self.hostshell is None:
+                raise ShellError("no hosts are configured")
+            return "", self.hostshell.run(target, args.get("argv", []))
+        raise CoolifyError(f"no adapter for {action}")
+
     def _run(self, project: Project, actor: str, action: str, target: str, args: dict[str, Any],
              approved_by: str | None = None) -> str:
-        uuid = project.apps[target]
+        verb, who = action.split(".", 1)[1], self._name(actor)
+        reads = action in READ_ACTIONS
         try:
-            if action == "coolify.status":
-                result = self.coolify.status(uuid)
-            elif action == "coolify.deploy":
-                result = self.coolify.deploy(uuid)
-            elif action == "coolify.restart":
-                result = self.coolify.restart(uuid)
-            elif action == "coolify.rollback":
-                result = self.coolify.rollback(uuid, args.get("tag"))
-            else:
-                raise CoolifyError(f"no adapter for {action}")
-        except CoolifyError as exc:
+            result, lines = self._execute(project, action, target, args)
+        except (CoolifyError, KubeError, ShellError) as exc:
             self.gk.audit.write(project=project.name, actor=actor, event="failed", action=action, target=target,
-                                error=str(exc), name=self._name(actor), approved_by=approved_by)
-            return f"Failed: {action.split('.', 1)[1]} {target}: {exc}. Nothing was changed."
+                                error=str(exc), name=who, approved_by=approved_by)
+            return f"Could not {verb} {target}: {exc}." if reads else f"Failed: {verb} {target}: {exc}. Nothing was changed."
+        shown = clean_lines(lines, self.cfg.alerts.evidence_lines) if lines is not None else None
         self.gk.audit.write(project=project.name, actor=actor, event="executed", action=action, target=target,
-                            result=result[:120], name=self._name(actor), approved_by=approved_by)
-        if action == "coolify.status":
+                            result=(result or f"{len(shown or [])} lines")[:120], name=who, approved_by=approved_by)
+        if shown is not None:                                  # command output is evidence: redacted, defused, fenced
+            cmd = f" {' '.join(args['argv'])}" if args.get("argv") else ""
+            by = f", approved by {self._name(approved_by)}" if approved_by else ""
+            return f"{verb} {target}{cmd} (for {who}{by}):\n{fenced(shown)}"
+        if reads:
             return result
         by = f", approved by {self._name(approved_by)}" if approved_by else ""
-        return f"Done: {action.split('.', 1)[1]} {target} for {self._name(actor)}{by}. {result}."
+        return f"Done: {verb} {target} for {who}{by}. {result}."
 
     # -- agent proposals (MCP tool request_action) ----------------------------
 

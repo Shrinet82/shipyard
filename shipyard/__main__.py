@@ -18,7 +18,9 @@ from .config import Config, expand, load_config
 from .coolify import CoolifyMcp
 from .digest import DigestScheduler
 from .gatekeeper import Gatekeeper
+from .hostshell import HostShell
 from .github import GitHubApp, GitHubError
+from .kube import Kube
 from .mcp_server import serve
 from .prwatch import PrWatcher
 from .service import Service
@@ -74,7 +76,12 @@ def run(config_path: str) -> None:
     else:
         log.warning("GitHub is not configured (needs github.app_id and the private key file): repo features are off")
 
-    service = Service(cfg, gk, coolify, switch.post, agent_name=creds.get("name", "gatekeeper"), github=github)
+    kube = Kube({r: expand(f) for r, f in cfg.kube.kubeconfigs.items()}, cfg.kube.kubectl, cfg.kube.max_replicas,
+                cfg.kube.timeout) if cfg.kube else None
+    hostshell = HostShell({n: {"ssh": h.ssh, "key_file": expand(h.key_file), "port": h.port} for n, h in cfg.hosts.items()}) \
+        if cfg.hosts else None
+    service = Service(cfg, gk, coolify, switch.post, agent_name=creds.get("name", "gatekeeper"), github=github,
+                      kube=kube, hostshell=hostshell)
     serve(service, cfg.mcp_port, open(expand(cfg.mcp_token_file)).read().strip())
     webhook.serve(_webhook_secret(cfg), service.on_coolify_event, cfg.alerts.bind, cfg.alerts.port)
 
@@ -86,7 +93,8 @@ def run(config_path: str) -> None:
         threading.Thread(target=_loop, args=(stop, cfg.github.poll_seconds, watcher.poll_once, "PR poll"), daemon=True).start()
         threading.Thread(target=_loop, args=(stop, 30, digest.tick, "digest"), daemon=True).start()
         threading.Thread(target=watcher.poll_once, daemon=True).start()
-    log.info("Gatekeeper up: %d project(s), GitHub %s", len(cfg.projects), "on" if github else "off")
+    log.info("Gatekeeper up: %d project(s), GitHub %s, Kubernetes %s, %d host(s)", len(cfg.projects),
+             "on" if github else "off", "on" if kube else "off", len(cfg.hosts))
     for ev in switch.events():
         try:
             service.handle_event(ev)

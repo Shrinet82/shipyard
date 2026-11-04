@@ -106,6 +106,19 @@ class CoolifyMcp:
             return [str(logs)]
         return [e.get("output", "") for e in entries if isinstance(e, dict) and not e.get("hidden")]
 
+    def deployment_history(self, uuid: str, limit: int = 8) -> list[str]:
+        req = urllib.request.Request(f"{self.base}/api/v1/deployments/applications/{uuid}",
+                                     headers={"Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                data = json.loads(r.read())
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise CoolifyError(f"could not read the deployment history: {e}") from e
+        rows = data if isinstance(data, list) else data.get("deployments", [])
+        return [f"{(d.get('created_at') or '')[:19]} {d.get('status', '?')} {(d.get('commit') or '')[:7]} "
+                f"{(d.get('commit_message') or '').strip().splitlines()[0][:70] if d.get('commit_message') else ''}".rstrip()
+                for d in rows[:limit]]
+
     def container_logs(self, uuid: str, lines: int = 100) -> list[str]:
         out = self.tool("get_logs", {"resource": "application", "uuid": uuid, "lines": lines})
         if isinstance(out, dict):

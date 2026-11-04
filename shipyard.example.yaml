@@ -61,6 +61,7 @@ actions:
   coolify.deploy:    change
   coolify.restart:   change
   k8s.restart:       change
+  k8s.rollback:      change      # needs approval: see approval_overrides
   k8s.scale:         change
   coolify.rollback:  change      # the Phase 1 exit check wants owner approval: see approval_overrides
   repo.merge:        dangerous
@@ -81,5 +82,6 @@ min_role:
 # Change-tier actions that still need an approval (second person or owner).
 approval_overrides:
   coolify.rollback: true
+  k8s.rollback: true
 
 approval_timeout_seconds: 600
