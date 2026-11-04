@@ -54,7 +54,7 @@ def create():
         json.dump(users, f)
 
 
-def say(user, text, channel="demo-ops", wait=25):
+def say(user, text, channel="demo-ops", wait=float(os.environ.get("WAIT", 25))):
     users = json.load(open(USERS))
     tok = login(user, users[user])
     ch = channel_id(tok, channel)
