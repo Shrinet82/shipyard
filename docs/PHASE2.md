@@ -103,12 +103,18 @@ A tiny web app with a `Dockerfile` and a GitHub Actions workflow that runs a uni
 | # | Item | State |
 |---|---|---|
 | 1 to 3 | Config, webhook listener, evidence and redaction | done, 183 tests |
-| 4 | Alert and Ops Agent wake-up | **verified live** on Mattermost and Discord with a real-shaped webhook sent across the VPC |
+| 4 | Alert and Ops Agent wake-up | **verified live with Coolify's own webhook** on Mattermost and Discord (see below) |
 | 5 to 9 | GitHub client, poller, repo reads, merge, digest | built and tested against fakes; **waiting for the GitHub App** to run live |
 | 10 | Demo repo, five PRs, Coolify app `demo-web` | done; CI runs and gives the intended results on every PR |
 | 11 | Read-only Coolify token | waiting for the token |
 
-Live results: a wrong webhook secret gets 404; the real event gets 200; the alert shows the last lines of the actual build log,
+Real failed deployment (Nov 4, 2026): `demo-web` was pointed at the `break-docker-build` branch and deployed through the Gatekeeper by a deployer.
+Coolify's build failed and Coolify itself sent `deployment_failed`; the Gatekeeper posted the actual build error (the last 40 log lines, secrets
+removed) to both ops rooms, and the Ops Agent answered in three lines: it failed at Dockerfile line 8 (`COPY requirements.txt .`), the old version
+kept running, restarting would not help, with options for people to choose. Discord splits long alerts into two messages. The app was then
+restored to `main` and redeployed.
+
+Earlier test: a wrong webhook secret gets 404; the real event gets 200; the alert shows the last lines of the actual build log,
 secrets removed; the Ops Agent diagnosed it in a few lines, and noticed that the test alert contradicted the deployment's real
 state (finished, running). On Discord a plain `@ops-agent` in the Gatekeeper's message is a real wake-up.
 
