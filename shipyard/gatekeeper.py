@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS approvals (
 """
 
 
+SEEN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS seen_events (key TEXT PRIMARY KEY, ts REAL NOT NULL);
+"""
+
+
 @dataclass(frozen=True)
 class Outcome:
     status: str  # allowed | denied | awaiting_approval | approved | expired
@@ -54,8 +59,15 @@ class Gatekeeper:
         self.now = now
         self.lock = threading.RLock()
         with self.lock:
-            self.db.executescript(APPROVALS_SCHEMA)
+            self.db.executescript(APPROVALS_SCHEMA + SEEN_SCHEMA)
         self.audit = AuditLog(db, now)
+
+    def first_time(self, key: str) -> bool:
+        """True the first time `key` is seen (and remembers it); False for a replay."""
+        with self.lock:
+            cur = self.db.execute("INSERT OR IGNORE INTO seen_events (key, ts) VALUES (?, ?)", (key, self.now()))
+            self.db.commit()
+            return cur.rowcount == 1
 
     # -- requests -------------------------------------------------------------
 

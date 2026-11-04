@@ -12,10 +12,50 @@ from .policy import Policy, Role, Tier
 
 
 @dataclass(frozen=True)
+class RepoCfg:
+    name: str                          # "owner/repo"
+    app: str | None = None             # Coolify app (a key of Project.apps) deployed after a merge
+    required_checks: tuple[str, ...] = ("test",)
+    merge_method: str = "squash"
+
+
+@dataclass(frozen=True)
 class Project:
     name: str
-    rooms: frozenset[str]          # Switch room ids where this project's commands are accepted
-    apps: dict[str, str]           # app name -> Coolify application uuid
+    ops_rooms: frozenset[str]          # alerts and diagnosis
+    maintainer_rooms: frozenset[str]   # PR alerts and the digest
+    apps: dict[str, str]               # app name -> Coolify application uuid
+    repo: RepoCfg | None = None
+    github_logins: dict[str, str] = field(default_factory=dict)   # sender id -> GitHub login
+
+    @property
+    def rooms(self) -> frozenset[str]:
+        return self.ops_rooms | self.maintainer_rooms
+
+
+@dataclass(frozen=True)
+class GithubCfg:
+    app_id: str = ""
+    installation_id: str = ""
+    private_key_file: str = "~/shipyard-github.pem"
+    poll_seconds: int = 60
+    stale_hours: float = 48.0
+
+
+@dataclass(frozen=True)
+class AlertCfg:
+    secret_file: str = "~/gatekeeper-webhook.secret"
+    bind: str = "0.0.0.0"
+    port: int = 8766
+    evidence_lines: int = 40
+    agent: str = "ops-agent"           # who is asked to diagnose
+
+
+@dataclass(frozen=True)
+class DigestCfg:
+    hour: int = 9
+    minute: int = 0
+    timezone: str = "Asia/Kolkata"
 
 
 @dataclass(frozen=True)
@@ -30,10 +70,20 @@ class Config:
     mcp_token_file: str = "~/gatekeeper-mcp.token"
     db_path: str = "~/shipyard.db"
     known_agents: frozenset[str] = frozenset({"ops-agent", "repo-agent"})
+    github: GithubCfg = GithubCfg()
+    alerts: AlertCfg = AlertCfg()
+    digest: DigestCfg = DigestCfg()
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
 
     def project_for_room(self, room_id: str) -> Project | None:
         return next((p for p in self.projects.values() if room_id in p.rooms), None)
+
+    def project_for_app_uuid(self, uuid: str) -> tuple[Project, str] | None:
+        for p in self.projects.values():
+            for name, u in p.apps.items():
+                if u == uuid:
+                    return p, name
+        return None
 
 
 def _role(name: str) -> Role:
@@ -67,16 +117,40 @@ def load_policy(path: str | Path) -> Policy:
     return _policy(yaml.safe_load(Path(path).read_text()))
 
 
+def _rooms(value: Any) -> tuple[frozenset[str], frozenset[str]]:
+    """`rooms: [a, b]` means ops rooms; `rooms: {ops: [...], maintainers: [...]}` names both."""
+    if isinstance(value, dict):
+        return (frozenset(str(r) for r in value.get("ops") or []),
+                frozenset(str(r) for r in value.get("maintainers") or []))
+    return frozenset(str(r) for r in value or []), frozenset()
+
+
 def load_config(path: str | Path) -> Config:
     raw = yaml.safe_load(Path(path).read_text())
     projects = {}
     for name, spec in (raw.get("projects") or {}).items():
         apps = {str(k): str(v) for k, v in (spec.get("apps") or {}).items()}
-        projects[name] = Project(name, frozenset(str(r) for r in (spec.get("rooms") or [])), apps)
+        ops, maint = _rooms(spec.get("rooms"))
+        repo = None
+        if spec.get("repo"):
+            r = spec["repo"]
+            if r.get("app") and r["app"] not in apps:
+                raise ValueError(f"repo.app {r['app']!r} is not one of the project's apps")
+            repo = RepoCfg(name=str(r["name"]), app=r.get("app"),
+                           required_checks=tuple(r.get("required_checks", ["test"])),
+                           merge_method=r.get("merge_method", "squash"))
+            if repo.merge_method not in ("merge", "squash", "rebase"):
+                raise ValueError("merge_method must be merge, squash or rebase")
+        projects[name] = Project(name, ops, maint, apps, repo,
+                                 {str(k): str(v) for k, v in (spec.get("github_logins") or {}).items()})
     rooms = [r for p in projects.values() for r in p.rooms]
     if len(rooms) != len(set(rooms)):
         raise ValueError("a room may belong to only one project")
+    for p in projects.values():
+        if p.ops_rooms & p.maintainer_rooms:
+            raise ValueError("a room cannot be both an ops room and a maintainers room")
     switch, coolify, gk = raw.get("switch") or {}, raw.get("coolify") or {}, raw.get("gatekeeper") or {}
+    gh, al, dg = raw.get("github") or {}, raw.get("alerts") or {}, raw.get("digest") or {}
     return Config(
         policy=_policy(raw),
         projects=projects,
@@ -88,6 +162,12 @@ def load_config(path: str | Path) -> Config:
         mcp_token_file=gk.get("mcp_token_file", "~/gatekeeper-mcp.token"),
         db_path=gk.get("db_path", "~/shipyard.db"),
         known_agents=frozenset(gk.get("known_agents", ["ops-agent", "repo-agent"])),
+        github=GithubCfg(str(gh.get("app_id", "")), str(gh.get("installation_id", "")),
+                         gh.get("private_key_file", "~/shipyard-github.pem"),
+                         int(gh.get("poll_seconds", 60)), float(gh.get("stale_hours", 48))),
+        alerts=AlertCfg(al.get("secret_file", "~/gatekeeper-webhook.secret"), al.get("bind", "0.0.0.0"),
+                        int(al.get("port", 8766)), int(al.get("evidence_lines", 40)), al.get("agent", "ops-agent")),
+        digest=DigestCfg(int(dg.get("hour", 9)), int(dg.get("minute", 0)), dg.get("timezone", "Asia/Kolkata")),
         raw=raw,
     )
 

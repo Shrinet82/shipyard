@@ -18,7 +18,8 @@ class CoolifyError(Exception):
 
 class CoolifyMcp:
     def __init__(self, base_url: str, token: str, timeout: float = 30.0):
-        self.url = base_url.rstrip("/") + "/mcp"
+        self.base = base_url.rstrip("/")
+        self.url = self.base + "/mcp"
         self.token = token
         self.timeout = timeout
         self.session: str | None = None
@@ -86,6 +87,30 @@ class CoolifyMcp:
         if isinstance(value, dict) and isinstance(value.get("data"), (dict, list)):
             return value["data"]          # Coolify wraps replies in {"data": ...}
         return value
+
+    # -- evidence (read-only) -------------------------------------------------
+
+    def deployment_logs(self, deployment_uuid: str) -> list[str]:
+        """Build/deploy log lines of one deployment. Only the REST API returns them."""
+        req = urllib.request.Request(f"{self.base}/api/v1/deployments/{deployment_uuid}",
+                                     headers={"Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                data = json.loads(r.read())
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise CoolifyError(f"could not read the deployment log: {e}") from e
+        logs = data.get("logs")
+        try:
+            entries = json.loads(logs) if isinstance(logs, str) else (logs or [])
+        except ValueError:
+            return [str(logs)]
+        return [e.get("output", "") for e in entries if isinstance(e, dict) and not e.get("hidden")]
+
+    def container_logs(self, uuid: str, lines: int = 100) -> list[str]:
+        out = self.tool("get_logs", {"resource": "application", "uuid": uuid, "lines": lines})
+        if isinstance(out, dict):
+            out = out.get("logs") or out.get("output") or json.dumps(out)
+        return str(out).splitlines()
 
     # -- operations -----------------------------------------------------------
 
