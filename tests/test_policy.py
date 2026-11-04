@@ -1,4 +1,4 @@
-import itertools
+from pathlib import Path
 import sqlite3
 
 import pytest
@@ -16,7 +16,7 @@ STRANGER = "discord:999999999999999999"
 
 @pytest.fixture
 def policy():
-    return load_policy("shipyard.example.yaml")
+    return load_policy(Path(__file__).parent / "policy_fixture.yaml")
 
 
 @pytest.fixture

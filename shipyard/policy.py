@@ -127,11 +127,22 @@ def evaluate(
     return Decision(Verdict.ALLOW, "allowed", tier, role)
 
 
-def may_approve(policy: Policy, *, project: str, requester: str, approver: str, approver_is_human: bool) -> bool:
+def may_approve(
+    policy: Policy,
+    *,
+    project: str,
+    requester: str,
+    approver: str,
+    approver_is_human: bool,
+    allow_requester: bool = False,
+) -> bool:
     """The owner may approve anything (including their own request); a maintainer
-    may approve someone else's request."""
+    may approve someone else's request. `allow_requester` lets the person an agent
+    acted for confirm it themselves (their role was already checked at request time)."""
     if not approver_is_human:
         return False
+    if allow_requester and approver == requester:
+        return True
     role = policy.members.get(project, {}).get(approver)
     if role is Role.OWNER:
         return True

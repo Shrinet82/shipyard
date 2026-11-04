@@ -1,0 +1,32 @@
+# Fixture for the table-driven policy tests. Opaque identity strings are fine: the engine only compares them.
+projects:
+  demo:
+    members:
+      "discord:111111111111111111": owner
+      "discord:222222222222222222": maintainer
+      "discord:333333333333333333": deployer
+      "discord:444444444444444444": viewer
+
+actions:
+  coolify.status:    read
+  coolify.logs:      read
+  audit.read:        read
+  coolify.deploy:    change
+  coolify.restart:   change
+  coolify.rollback:  change
+  k8s.scale:         change
+  repo.merge:        dangerous
+  ops.shell:         dangerous
+  ops.exec:          dangerous
+  secrets.read:      dangerous
+  ops.firewall:      blocked
+  repo.force_push_main: blocked
+
+min_role:
+  ops.shell: owner
+  ops.exec: owner
+
+approval_overrides:
+  coolify.rollback: true
+
+approval_timeout_seconds: 600

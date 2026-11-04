@@ -1,7 +1,7 @@
 """Gatekeeper core: policy + approvals + audit. Transport-agnostic.
 
-The Switch agent-protocol adapter and the backend adapters (Coolify, GitHub,
-Kubernetes) plug in around this; nothing here talks to the network.
+The Switch client, the Coolify adapter and the chat service plug in around this;
+nothing here talks to the network.
 """
 from __future__ import annotations
 
@@ -9,12 +9,13 @@ import hashlib
 import json
 import secrets
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .audit import AuditLog
-from .policy import Decision, Policy, Verdict, evaluate, may_approve
+from .policy import Decision, Policy, Tier, Verdict, evaluate, may_approve
 
 APPROVALS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS approvals (
@@ -24,6 +25,9 @@ CREATE TABLE IF NOT EXISTS approvals (
     action TEXT NOT NULL,
     target TEXT NOT NULL,
     args_hash TEXT NOT NULL,
+    args_json TEXT NOT NULL DEFAULT '{}',
+    room_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'command',
     expires REAL NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending'
 );
@@ -35,6 +39,7 @@ class Outcome:
     status: str  # allowed | denied | awaiting_approval | approved | expired
     reason: str
     approval_id: str | None = None
+    request: dict[str, Any] | None = None  # the stored request, on approve
 
 
 def args_hash(action: str, target: str, args: Mapping[str, Any]) -> str:
@@ -47,33 +52,72 @@ class Gatekeeper:
         self.policy = policy
         self.db = db
         self.now = now
-        self.db.executescript(APPROVALS_SCHEMA)
+        self.lock = threading.RLock()
+        with self.lock:
+            self.db.executescript(APPROVALS_SCHEMA)
         self.audit = AuditLog(db, now)
 
+    # -- requests -------------------------------------------------------------
+
     def request_action(
-        self, *, project: str, identity: str, is_human: bool, action: str, target: str, args: Mapping[str, Any] | None = None
+        self,
+        *,
+        project: str,
+        identity: str,
+        is_human: bool,
+        action: str,
+        target: str,
+        args: Mapping[str, Any] | None = None,
+        room_id: str = "",
+        kind: str = "command",
+        force_approval: bool = False,
+        **detail: Any,
     ) -> Outcome:
+        """Decide a request. `kind="agent_proposal"` with `force_approval` makes every
+        non-read action wait for a human, whatever the role allows."""
         args = dict(args or {})
         d: Decision = evaluate(
             self.policy, project=project, identity=identity, is_human=is_human, action=action, target=target, args=args
         )
         if d.verdict is Verdict.DENY:
-            self.audit.write(project=project, actor=identity, event="denied", action=action, target=target, reason=d.reason)
+            self.audit.write(project=project, actor=identity, event="denied", action=action, target=target,
+                             reason=d.reason, kind=kind, **detail)
             return Outcome("denied", d.reason)
-        if d.verdict is Verdict.ALLOW:
-            self.audit.write(project=project, actor=identity, event="allowed", action=action, target=target)
+        if d.verdict is Verdict.ALLOW and not (force_approval and d.tier is not Tier.READ):
+            self.audit.write(project=project, actor=identity, event="allowed", action=action, target=target,
+                             kind=kind, **detail)
             return Outcome("allowed", d.reason)
 
         approval_id = secrets.token_hex(4)
-        self.db.execute(
-            "INSERT INTO approvals (id, project, requester, action, target, args_hash, expires) VALUES (?,?,?,?,?,?,?)",
-            (approval_id, project, identity, action, target, args_hash(action, target, args),
-             self.now() + self.policy.approval_timeout_seconds),
-        )
-        self.db.commit()
+        with self.lock:
+            self.db.execute(
+                "INSERT INTO approvals (id, project, requester, action, target, args_hash, args_json, room_id, kind, expires)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (approval_id, project, identity, action, target, args_hash(action, target, args),
+                 json.dumps(args, sort_keys=True), room_id, kind, self.now() + self.policy.approval_timeout_seconds),
+            )
+            self.db.commit()
         self.audit.write(project=project, actor=identity, event="approval_requested", action=action, target=target,
-                         approval_id=approval_id)
+                         approval_id=approval_id, kind=kind, **detail)
         return Outcome("awaiting_approval", "approval required", approval_id)
+
+    def _load(self, approval_id: str) -> dict[str, Any] | None:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT project, requester, action, target, args_hash, args_json, room_id, kind, expires, state"
+                " FROM approvals WHERE id=?", (approval_id,)).fetchone()
+        if row is None:
+            return None
+        keys = ("project", "requester", "action", "target", "args_hash", "args_json", "room_id", "kind", "expires", "state")
+        r = dict(zip(keys, row))
+        r["args"] = json.loads(r["args_json"])
+        return r
+
+    def pending(self, approval_id: str) -> dict[str, Any] | None:
+        r = self._load(approval_id)
+        return r if r and r["state"] == "pending" else None
+
+    # -- approvals ------------------------------------------------------------
 
     def approve(
         self, *, approval_id: str, project: str, approver: str, approver_is_human: bool,
@@ -81,36 +125,75 @@ class Gatekeeper:
     ) -> Outcome:
         """Approve exactly one pending request. The caller re-supplies the action,
         target and args it is about to execute; they must match what was requested."""
-        row = self.db.execute(
-            "SELECT project, requester, action, target, args_hash, expires, state FROM approvals WHERE id=?",
-            (approval_id,),
-        ).fetchone()
-        if row is None or row[0] != project or row[6] != "pending":
+        r = self._load(approval_id)
+        if r is None or r["project"] != project or r["state"] != "pending":
             self.audit.write(project=project, actor=approver, event="approval_rejected", action=action, target=target,
                              approval_id=approval_id, reason="unknown or already used")
             return Outcome("denied", "unknown or already used approval")
-        _, requester, r_action, r_target, r_hash, expires, _ = row
-        if self.now() > expires:
-            self.db.execute("UPDATE approvals SET state='expired' WHERE id=?", (approval_id,))
-            self.db.commit()
-            self.audit.write(project=project, actor=approver, event="approval_expired", action=r_action, target=r_target,
-                             approval_id=approval_id)
+        if self.now() > r["expires"]:
+            self._set_state(approval_id, "expired")
+            self.audit.write(project=project, actor=approver, event="approval_expired", action=r["action"],
+                             target=r["target"], approval_id=approval_id)
             return Outcome("expired", "approval expired")
-        if (action, target, args_hash(action, target, dict(args or {}))) != (r_action, r_target, r_hash):
+        if (action, target, args_hash(action, target, dict(args or {}))) != (r["action"], r["target"], r["args_hash"]):
             self.audit.write(project=project, actor=approver, event="approval_rejected", action=action, target=target,
                              approval_id=approval_id, reason="does not match the original request")
             return Outcome("denied", "approval does not match the original request")
-        if not may_approve(self.policy, project=project, requester=requester, approver=approver,
-                           approver_is_human=approver_is_human):
-            self.audit.write(project=project, actor=approver, event="approval_rejected", action=r_action, target=r_target,
-                             approval_id=approval_id, reason="approver not authorized")
+        if not may_approve(self.policy, project=project, requester=r["requester"], approver=approver,
+                           approver_is_human=approver_is_human, allow_requester=r["kind"] == "agent_proposal"):
+            self.audit.write(project=project, actor=approver, event="approval_rejected", action=r["action"],
+                             target=r["target"], approval_id=approval_id, reason="approver not authorized")
             return Outcome("denied", "approver not authorized")
 
         # Single use: only the first writer flips pending -> approved.
-        cur = self.db.execute("UPDATE approvals SET state='approved' WHERE id=? AND state='pending'", (approval_id,))
-        self.db.commit()
+        with self.lock:
+            cur = self.db.execute("UPDATE approvals SET state='approved' WHERE id=? AND state='pending'", (approval_id,))
+            self.db.commit()
         if cur.rowcount != 1:
             return Outcome("denied", "unknown or already used approval")
-        self.audit.write(project=project, actor=approver, event="approved", action=r_action, target=r_target,
-                         approval_id=approval_id, requester=requester)
-        return Outcome("approved", "approved", approval_id)
+        self.audit.write(project=project, actor=approver, event="approved", action=r["action"], target=r["target"],
+                         approval_id=approval_id, requester=r["requester"])
+        return Outcome("approved", "approved", approval_id, r)
+
+    def approve_by_id(self, *, approval_id: str, project: str, approver: str, approver_is_human: bool) -> Outcome:
+        """Approve using the stored request, as the chat flow does."""
+        r = self._load(approval_id)
+        if r is None or r["project"] != project:
+            return self.approve(approval_id=approval_id, project=project, approver=approver,
+                                approver_is_human=approver_is_human, action="?", target="?")
+        return self.approve(approval_id=approval_id, project=project, approver=approver,
+                            approver_is_human=approver_is_human, action=r["action"], target=r["target"], args=r["args"])
+
+    def deny_by_id(self, *, approval_id: str, project: str, actor: str, actor_is_human: bool) -> Outcome:
+        """Cancel a pending request: the requester, or anyone who could approve it."""
+        r = self._load(approval_id)
+        if r is None or r["project"] != project or r["state"] != "pending":
+            return Outcome("denied", "unknown or already used approval")
+        if not may_approve(self.policy, project=project, requester=r["requester"], approver=actor,
+                           approver_is_human=actor_is_human, allow_requester=True):
+            self.audit.write(project=project, actor=actor, event="approval_rejected", action=r["action"],
+                             target=r["target"], approval_id=approval_id, reason="not allowed to cancel")
+            return Outcome("denied", "not allowed to cancel this request")
+        self._set_state(approval_id, "denied")
+        self.audit.write(project=project, actor=actor, event="approval_denied", action=r["action"], target=r["target"],
+                         approval_id=approval_id)
+        return Outcome("approved", "cancelled", approval_id, r)
+
+    def _set_state(self, approval_id: str, state: str) -> None:
+        with self.lock:
+            self.db.execute("UPDATE approvals SET state=? WHERE id=?", (state, approval_id))
+            self.db.commit()
+
+    def sweep_expired(self) -> list[dict[str, Any]]:
+        """Mark overdue pending approvals expired; return them so the caller can say so."""
+        with self.lock:
+            ids = [row[0] for row in self.db.execute(
+                "SELECT id FROM approvals WHERE state='pending' AND expires < ?", (self.now(),))]
+        expired = []
+        for approval_id in ids:
+            r = self._load(approval_id)
+            self._set_state(approval_id, "expired")
+            self.audit.write(project=r["project"], actor="gatekeeper", event="approval_expired", action=r["action"],
+                             target=r["target"], approval_id=approval_id)
+            expired.append({"id": approval_id, **r})
+        return expired
