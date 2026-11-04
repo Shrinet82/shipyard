@@ -56,9 +56,10 @@ CACHE_LIMIT = 500
 class Service:
     def __init__(self, cfg: Config, gk: Gatekeeper, coolify: Any, post: Callable[[str, str], None],
                  agent_name: str = "gatekeeper", now: Callable[[], float] = time.time, github: Any = None,
-                 kube: Any = None, hostshell: Any = None, sbom: Any = None):
+                 kube: Any = None, hostshell: Any = None, sbom: Any = None, dashauth: Any = None):
         self.cfg, self.gk, self.coolify, self.post, self.github = cfg, gk, coolify, post, github
         self.kube, self.hostshell = kube, hostshell
+        self.dashauth = dashauth                # DashAuth, when the dashboard is on
         self.sbom = sbom                       # an SbomCollector, or None when the SBOM gate is not configured
         self.agent_name = agent_name
         self.now = now
@@ -143,6 +144,8 @@ class Service:
             return self._repo_read(project, room, sender, cmd)
         if cmd.verb == "sbom":
             return self._sbom(project, room, sender, cmd)
+        if cmd.verb == "dashboard-login":
+            return self._dashboard_login(project, sender, cmd)
         if cmd.verb in ("logs", "events"):
             return self._read_ops(project, room, sender, cmd)
         if cmd.verb in ("shell", "exec"):
@@ -284,6 +287,21 @@ class Service:
                    ids: list[str], commit: str) -> None:
         self.gk.audit.write(project=project.name, actor=actor, event="gate_blocked", action=action, target=target,
                             reason=reasons[0][:300], cves=ids, commit=commit[:12], name=sender_name)
+
+    def _dashboard_login(self, project: Project, sender: str, cmd: Command) -> str:
+        """The person who typed this is who Switch says they are: bind the dashboard's waiting code to them."""
+        if self.dashauth is None:
+            return "The dashboard is not turned on."
+        if not self._is_member(project, sender):
+            return self._deny(project, sender, "dashboard.login", "dashboard", "you are not a member of this project")
+        if not self.dashauth.approve(cmd.args[0], sender, project.name):
+            self.gk.audit.write(project=project.name, actor=sender, event="denied", action="dashboard.login", target="dashboard",
+                                reason="unknown or expired code", name=self._name(sender))
+            return "That code is unknown, used or expired. Start again from the dashboard."
+        role = self.cfg.policy.members[project.name][sender].name.lower()
+        self.gk.audit.write(project=project.name, actor=sender, event="allowed", action="dashboard.login", target="dashboard",
+                            name=self._name(sender), role=role)
+        return f"Signed in to the dashboard as {self._name(sender)} ({role}). Go back to your browser; the code is now used up."
 
     def _sbom(self, project: Project, room: str, sender: str, cmd: Command) -> str:
         target = cmd.args[0] if cmd.args else project.name
@@ -716,6 +734,8 @@ class Service:
     # -- housekeeping ---------------------------------------------------------
 
     def sweep(self) -> None:
+        if self.dashauth is not None:
+            self.dashauth.sweep()
         for r in self.gk.sweep_expired():
             if r["room_id"]:
                 self.post(r["room_id"], f"Request {r['id']} ({r['action'].split('.', 1)[1]} {r['target']}) expired "

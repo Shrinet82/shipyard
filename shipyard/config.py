@@ -54,6 +54,7 @@ class Project:
     repo: RepoCfg | None = None
     github_logins: dict[str, str] = field(default_factory=dict)   # sender id -> GitHub login
     k8s_apps: dict[str, K8sApp] = field(default_factory=dict)     # app name -> Kubernetes deployment
+    room_names: dict[str, str] = field(default_factory=dict)      # room id -> label for people, e.g. "#demo-ops"
 
     @property
     def rooms(self) -> frozenset[str]:
@@ -120,6 +121,9 @@ class Config:
     mcp_token_file: str = "~/gatekeeper-mcp.token"
     db_path: str = "~/shipyard.db"
     known_agents: frozenset[str] = frozenset({"ops-agent", "repo-agent"})
+    gateway_env_file: str = "~/switch/.env"        # Switch's admin login, used by the dashboard's agent-access sync
+    managed_agents: tuple[str, ...] = ("ops-agent", "repo-agent")
+    allow_agents: tuple[str, ...] = ("gatekeeper",)   # agents that may address the managed ones (alerts wake the Ops Agent)
     github: GithubCfg = GithubCfg()
     alerts: AlertCfg = AlertCfg()
     digest: DigestCfg = DigestCfg()
@@ -207,7 +211,8 @@ def load_config(path: str | Path) -> Config:
             if repo.merge_method not in ("merge", "squash", "rebase"):
                 raise ValueError("merge_method must be merge, squash or rebase")
         projects[name] = Project(name, ops, maint, apps, repo,
-                                 {str(k): str(v) for k, v in (spec.get("github_logins") or {}).items()}, k8s_apps)
+                                 {str(k): str(v) for k, v in (spec.get("github_logins") or {}).items()}, k8s_apps,
+                                 {str(k): str(v)[:60] for k, v in (spec.get("room_names") or {}).items()})
     rooms = [r for p in projects.values() for r in p.rooms]
     if len(rooms) != len(set(rooms)):
         raise ValueError("a room may belong to only one project")
@@ -229,6 +234,9 @@ def load_config(path: str | Path) -> Config:
         projects=projects,
         switch_url=switch.get("url", "http://localhost:8000"),
         agent_credentials_file=switch.get("credentials_file", "~/gatekeeper.json"),
+        gateway_env_file=switch.get("gateway_env_file", "~/switch/.env"),
+        managed_agents=tuple(str(a) for a in switch.get("managed_agents", ["ops-agent", "repo-agent"])),
+        allow_agents=tuple(str(a) for a in switch.get("allow_agents", ["gatekeeper"])),
         coolify_url=coolify.get("url", ""),
         coolify_token_file=coolify.get("token_file", "~/coolify.env"),
         mcp_port=int(gk.get("mcp_port", 8765)),

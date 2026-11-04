@@ -15,11 +15,16 @@ import threading
 
 from . import webhook
 from .config import Config, expand, load_config
+from .access import AgentAccess, Gateway, read_env
 from .coolify import CoolifyMcp
+from .dashauth import DashAuth
+from .dashboard import Dashboard, serve as serve_dashboard
 from .digest import DigestScheduler
 from .gatekeeper import Gatekeeper
 from .hostshell import HostShell
 from .github import GitHubApp, GitHubError
+from .health import Health
+from .members import MemberStore
 from .kube import Kube
 from .mcp_server import serve
 from .prwatch import PrWatcher
@@ -55,6 +60,26 @@ def _loop(stop: threading.Event, every: float, fn, what: str) -> None:
             log.exception("%s failed", what)
 
 
+def _gateway_factory(cfg: Config):
+    path = expand(cfg.gateway_env_file)
+    if not os.path.exists(path):
+        return None
+
+    def make() -> Gateway:
+        env = read_env(path)
+        return Gateway(cfg.switch_url, env["GATEWAY_ADMIN_EMAIL"], env["GATEWAY_ADMIN_PASSWORD"])
+    return make
+
+
+def _start_dashboard(cfg, gk, auth, collector, members, service, coolify, kube, github, hostshell, db, stop) -> None:
+    gateway = _gateway_factory(cfg)
+    health = Health(cfg, coolify=coolify, kube=kube, github=github, hostshell=hostshell, gateway=gateway)
+    access = AgentAccess(cfg, gateway, db, gk.lock, gk.audit) if gateway else None
+    dash = Dashboard(cfg, gk, auth, collector.store if collector else None, health, members, access, service._name)
+    threading.Thread(target=health.loop, args=(stop,), daemon=True).start()
+    serve_dashboard(dash, cfg.dashboard.bind, cfg.dashboard.port)
+
+
 def run(config_path: str) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     cfg = load_config(config_path)
@@ -87,12 +112,16 @@ def run(config_path: str) -> None:
         collector = SbomCollector(cfg, gk, github, SbomStore(expand(cfg.sbom.data_dir), db, gk.lock), switch.post)
     else:
         log.warning("SBOM reports and the deploy gate are off (they need GitHub and sbom.enabled)")
+    members = MemberStore(expand(cfg.dashboard.members_file), cfg.policy, gk.audit)
+    members.load()
+    auth = DashAuth(db, gk.lock, session_hours=cfg.dashboard.session_hours)
     service = Service(cfg, gk, coolify, switch.post, agent_name=creds.get("name", "gatekeeper"), github=github,
-                      kube=kube, hostshell=hostshell, sbom=collector)
+                      kube=kube, hostshell=hostshell, sbom=collector, dashauth=auth)
     serve(service, cfg.mcp_port, open(expand(cfg.mcp_token_file)).read().strip())
     webhook.serve(_webhook_secret(cfg), service.on_coolify_event, cfg.alerts.bind, cfg.alerts.port)
 
     stop = switch.stop
+    _start_dashboard(cfg, gk, auth, collector, members, service, coolify, kube, github, hostshell, db, stop)
     threading.Thread(target=_loop, args=(stop, 30, service.sweep, "sweep"), daemon=True).start()
     if github:
         watcher = PrWatcher(cfg, gk, github, switch.post)
@@ -120,9 +149,23 @@ def main() -> None:
     w = sub.add_parser("webhook-url", help="print the Coolify webhook URL (contains a secret)")
     w.add_argument("--config", default="shipyard.yaml")
     w.add_argument("--host", required=True, help="this machine's private address, as Coolify will reach it")
+    t = sub.add_parser("dashboard-token", help="print a dashboard sign-in token for a member (run on the VM; shown once)")
+    t.add_argument("--config", default="shipyard.yaml")
+    t.add_argument("--identity", required=True, help="the member's chat id, as `@gatekeeper whoami` prints it")
+    t.add_argument("--project", default=None)
+    t.add_argument("--hours", type=float, default=8.0)
     args = ap.parse_args()
     if args.cmd == "run":
         run(args.config)
+    elif args.cmd == "dashboard-token":
+        cfg = load_config(args.config)
+        project = args.project or next(iter(cfg.projects))
+        members = MemberStore(expand(cfg.dashboard.members_file), cfg.policy, None)      # load() does not audit
+        members.load()
+        if args.identity not in cfg.policy.members.get(project, {}):
+            raise SystemExit(f"{args.identity} is not a member of {project}")
+        db = sqlite3.connect(expand(cfg.db_path))
+        print(DashAuth(db, session_hours=cfg.dashboard.session_hours).issue(args.identity, project, args.hours))
     else:
         cfg = load_config(args.config)
         print(f"http://{args.host}:{cfg.alerts.port}/hooks/coolify/{_webhook_secret(cfg)}")

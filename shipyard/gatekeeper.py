@@ -125,6 +125,13 @@ class Gatekeeper:
         r["args"] = json.loads(r["args_json"])
         return r
 
+    def pending_list(self, project: str) -> list[dict[str, Any]]:
+        """Open requests of a project, oldest first (the dashboard's approvals page; it can only look)."""
+        with self.lock:
+            ids = [r[0] for r in self.db.execute(
+                "SELECT id FROM approvals WHERE project=? AND state='pending' AND expires>=? ORDER BY expires", (project, self.now()))]
+        return [{"id": i, **r} for i in ids if (r := self._load(i))]
+
     def pending(self, approval_id: str) -> dict[str, Any] | None:
         r = self._load(approval_id)
         return r if r and r["state"] == "pending" else None

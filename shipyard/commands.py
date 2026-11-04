@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-VERBS = {"status", "deploy", "restart", "rollback", "merge", "prs", "pr", "digest", "logs", "events", "scale", "shell", "exec", "approve", "deny", "audit", "whoami", "sbom", "help"}
+VERBS = {"status", "deploy", "restart", "rollback", "merge", "prs", "pr", "digest", "logs", "events", "scale", "shell", "exec", "approve", "deny", "audit", "whoami", "sbom", "dashboard-login", "help"}
 
 # Leading mentions: "@gatekeeper", "<@123>", "<@&123>", optionally followed by , or :
 _MENTION = re.compile(r"^\s*(?:(?:@[A-Za-z0-9._-]+|<@[&!]?\d+>)\s*[,:]?\s*)+")
@@ -22,14 +22,14 @@ ARITY = {
     "status": (0, 1), "deploy": (1, 1), "restart": (1, 1), "rollback": (1, 2),
     "merge": (1, 1), "prs": (0, 0), "pr": (1, 1), "digest": (0, 0),
     "logs": (1, 2), "events": (1, 1), "scale": (2, 2), "shell": (2, 12), "exec": (2, 12),
-    "approve": (1, 1), "deny": (1, 1), "audit": (0, 1), "whoami": (0, 0), "sbom": (0, 1), "help": (0, 0),
+    "approve": (1, 1), "deny": (1, 1), "audit": (0, 1), "whoami": (0, 0), "sbom": (0, 1), "dashboard-login": (1, 1), "help": (0, 0),
 }
 
 USAGE = {
     "status": "`status [app]`", "deploy": "`deploy <app>`", "restart": "`restart <app>`",
     "rollback": "`rollback <app> [image-tag]`", "merge": "`merge <pr-number>`", "logs": "`logs <app> [lines]`", "events": "`events <app>`", "scale": "`scale <app> <replicas>`",
     "shell": "`shell <host> <command>`", "exec": "`exec <app> <command>`", "prs": "`prs`", "pr": "`pr <number>`", "digest": "`digest`", "approve": "`approve <id>`", "deny": "`deny <id>`",
-    "audit": "`audit [count]`", "whoami": "`whoami`", "sbom": "`sbom [pr-number|commit]`", "help": "`help`",
+    "audit": "`audit [count]`", "whoami": "`whoami`", "sbom": "`sbom [pr-number|commit]`", "dashboard-login": "`dashboard-login <code>`", "help": "`help`",
 }
 
 
