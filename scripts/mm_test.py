@@ -37,9 +37,9 @@ def channel_id(tok, name):
 def create():
     admin = login(env["MATTERMOST_ADMIN_USER"], env["MATTERMOST_ADMIN_PASSWORD"])
     team = mm("GET", f"/teams/name/{env['MATTERMOST_TEAM_NAME']}", tok=admin)[0]["id"]
-    ch = channel_id(admin, "demo-ops")
+    chans = [channel_id(admin, c) for c in ("demo-ops", "demo-maintainers")]
     users = json.load(open(USERS)) if os.path.exists(USERS) else {}
-    for name in ("owner", "deployer", "viewer", "guest"):
+    for name in ("owner", "maint", "deployer", "viewer", "guest"):
         uname = f"sy-{name}"
         if uname not in users:
             users[uname] = secrets.token_urlsafe(18)
@@ -47,7 +47,8 @@ def create():
         else:
             u = mm("GET", f"/users/username/{uname}", tok=admin)[0]
         mm("POST", f"/teams/{team}/members", {"team_id": team, "user_id": u["id"]}, admin)
-        mm("POST", f"/channels/{ch}/members", {"user_id": u["id"]}, admin)
+        for ch in chans:
+            mm("POST", f"/channels/{ch}/members", {"user_id": u["id"]}, admin)
         print("ready", uname)
     fd = os.open(USERS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:

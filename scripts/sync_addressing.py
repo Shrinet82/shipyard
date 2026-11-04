@@ -29,7 +29,9 @@ def main():
     cfg = yaml.safe_load(open(os.path.expanduser(a.config)))
     env = dict(l.strip().split("=", 1) for l in open(os.path.expanduser(a.switch_env)) if "=" in l and not l.startswith("#"))
     members = sorted({m for name, p in cfg["projects"].items() if a.project in (None, name) for m in (p.get("members") or {})})
-    rooms = sorted({r for name, p in cfg["projects"].items() if a.project in (None, name) for r in (p.get("rooms") or [])})
+    def room_ids(v):          # a flat list (ops rooms) or {ops: [...], maintainers: [...]}
+        return [*(v.get("ops") or []), *(v.get("maintainers") or [])] if isinstance(v, dict) else list(v or [])
+    rooms = sorted({r for name, p in cfg["projects"].items() if a.project in (None, name) for r in room_ids(p.get("rooms"))})
     op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
     def call(method, path, body=None):
