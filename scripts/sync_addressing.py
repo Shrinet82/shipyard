@@ -41,16 +41,36 @@ def main():
             return e.code, e.read().decode()[:300]
 
     call("POST", "/auth/login", {"email": env["GATEWAY_ADMIN_EMAIL"], "password": env["GATEWAY_ADMIN_PASSWORD"]})
+    # Switch's `users` dimension holds the ExternalUser row id of a platform account, not the
+    # sender string, so translate each member through the Gateway's per-bridge user list.
+    s, bridges = call("GET", "/collaborations")
+    squash = lambda t: "".join(ch for ch in t.lower() if ch.isalnum())
+    rows = {}
+    for b in bridges:
+        s, users = call("GET", f"/collaborations/{b['bridge_id']}/users")
+        for u in users if s == 200 else []:
+            rows[f"@switch-{b['bridge_type']}-{b['bridge_id']}-"] = rows.get(f"@switch-{b['bridge_type']}-{b['bridge_id']}-", []) + [u]
+    user_ids = []
+    for m in members:
+        hit = None
+        for prefix, us in rows.items():
+            if m.startswith(prefix):
+                name = squash(m[len(prefix):].rsplit(":", 1)[0])
+                hit = next((u["id"] for u in us if squash(u["external_username"] or "") == name), None)
+        if hit:
+            user_ids.append(hit)
+        else:
+            print("  warning: no Switch record yet for", m, "(they have not posted in a bridged channel)")
     s, agents = call("GET", "/agents")
     ids = {x["name"]: x["id"] for x in (agents if isinstance(agents, list) else agents.get("agents", []))}
     for name in a.agent:
         # Only people in the project may address the agent, and only in the project's rooms;
         # the owner keeps access everywhere. Platform and agent senders are not admitted.
         policy = {"rules": [
-            {"rooms": rooms, "users": members, "agents": [], "owner": False, "platform": False},
+            {"rooms": rooms, "users": user_ids, "agents": [], "owner": False, "platform": False},
             {"rooms": "*", "users": [], "agents": [], "owner": True, "platform": False}]}
         s, r = call("PUT", f"/agents/{ids[name]}/addressing-policy", {"policy": policy})
-        print(name, "addressing policy:", s, f"({len(members)} members, {len(rooms)} rooms)")
+        print(name, "addressing policy:", s, f"({len(user_ids)} of {len(members)} members resolved, {len(rooms)} rooms)")
 
 
 if __name__ == "__main__":
