@@ -11,12 +11,34 @@ gatekeeper:
   mcp_token_file: ~/gatekeeper-mcp.token
   db_path: ~/shipyard.db
 
+github:                                       # a GitHub App installed on the repo (see docs/PHASE2.md)
+  app_id: ""                                  # leave empty to run without GitHub features
+  private_key_file: ~/shipyard-github.pem
+  poll_seconds: 60
+  stale_hours: 48
+alerts:                                       # Coolify's webhook posts here; the URL carries a secret
+  port: 8766
+  evidence_lines: 40
+  agent: ops-agent
+digest:
+  hour: 9
+  minute: 0
+  timezone: Asia/Kolkata
+
 projects:
   demo:
-    rooms:                                    # Switch room ids where commands are accepted
-      - "00000000-0000-0000-0000-000000000001"
+    rooms:                                    # Switch room ids
+      ops: ["00000000-0000-0000-0000-000000000001"]          # commands, alerts, diagnosis
+      maintainers: ["00000000-0000-0000-0000-000000000002"]  # PR alerts and the digest
     apps:                                     # app name -> Coolify application uuid
-      demo-app: "aaaaaaaaaaaaaaaaaaaaaaaa"
+      demo-web: "aaaaaaaaaaaaaaaaaaaaaaaa"
+    repo:
+      name: owner/repo
+      app: demo-web                           # deployed after a merge
+      required_checks: [test]                 # CI is green only when these succeed
+      merge_method: squash
+    github_logins:                            # who is who on GitHub, for the digest
+      "@switch-discord-BRIDGE-owner:localhost": owner-login
     members:
       "@switch-discord-BRIDGE-owner:localhost": owner
       "@switch-discord-BRIDGE-maint:localhost": maintainer
@@ -32,6 +54,7 @@ actions:
   k8s.logs:          read
   k8s.events:        read
   repo.pr_list:      read
+  repo.pr_status:    read
   repo.digest:       read
   audit.read:        read
   sbom.read:         read

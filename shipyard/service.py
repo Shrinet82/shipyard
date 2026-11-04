@@ -15,9 +15,16 @@ from .commands import USAGE, Command, arity_ok, parse
 from .config import Config, Project
 from .coolify import CoolifyError
 from .evidence import clean_lines, fenced
+from .digest import build_digest
 from .gatekeeper import Gatekeeper
+from .github import GitHubError
+from .policy import Verdict, evaluate
 
 ACTION_FOR_VERB = {
+    "merge": "repo.merge",
+    "prs": "repo.pr_list",
+    "pr": "repo.pr_status",
+    "digest": "repo.digest",
     "status": "coolify.status",
     "deploy": "coolify.deploy",
     "restart": "coolify.restart",
@@ -113,6 +120,10 @@ class Service:
             return self._audit(project, sender, cmd)
         if cmd.verb == "status":
             return self._status(project, room, sender, cmd)
+        if cmd.verb in ("prs", "pr", "digest"):
+            return self._repo_read(project, room, sender, cmd)
+        if cmd.verb == "merge":
+            return self._merge(project, room, sender, cmd)
         return self._change(project, room, sender, cmd)
 
     # -- read commands --------------------------------------------------------
@@ -163,6 +174,122 @@ class Service:
             lines.append(f"{when} {who} {r['event']} {r['action']} {r['target']}" + (f" ({extra})" if extra else ""))
         return "Audit log (UTC):\n" + "\n".join(lines)
 
+    # -- repository -----------------------------------------------------------
+
+    def _repo_ready(self, project: Project) -> str | None:
+        if project.repo is None or self.github is None:
+            return "No repository is connected to this project."
+        return None
+
+    def _pr_line(self, project: Project, pr) -> str:
+        c = self.github.checks(project.repo.name, pr.head_sha, project.repo.required_checks)
+        flags = [f"CI {c.ci}"] + (["conflict"] if pr.mergeable is False else []) + (["draft"] if pr.draft else [])
+        return f"#{pr.number} {pr.title} by {pr.author} ({', '.join(flags)}) {pr.url}"
+
+    def _repo_read(self, project: Project, room: str, sender: str, cmd: Command) -> str:
+        action = ACTION_FOR_VERB[cmd.verb]
+        target = cmd.args[0] if cmd.args else project.name
+        if not self._is_member(project, sender):
+            return self._deny(project, sender, action, target, "you are not a member of this project")
+        out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action=action, target=target,
+                                     room_id=room, name=self._name(sender))
+        if out.status != "allowed":
+            return f"Denied: {out.reason}."
+        if (msg := self._repo_ready(project)):
+            return msg
+        try:
+            if cmd.verb == "prs":
+                prs = self.github.list_open_prs(project.repo.name)
+                return "Open pull requests:\n" + "\n".join(self._pr_line(project, p) for p in prs) if prs else "No open pull requests."
+            if cmd.verb == "pr":
+                if not target.isdigit():
+                    return f"Usage: {USAGE['pr']}"
+                return self._pr_line(project, self.github.pr(project.repo.name, int(target)))
+            login = project.github_logins.get(sender)
+            if not login:
+                return "No GitHub login is configured for you in this project."
+            return build_digest(self.github, project, login, self._name(sender), dt.datetime.now(dt.timezone.utc))
+        except GitHubError as exc:
+            return f"Could not reach GitHub: {exc}"
+
+    def _merge_blockers(self, project: Project, number: int):
+        """(pr, reason). A reason means: do not merge. Used when asked, and again after approval."""
+        pr = self.github.pr(project.repo.name, number)
+        if pr.state != "open":
+            return pr, f"PR #{number} is {pr.state}"
+        if pr.draft:
+            return pr, f"PR #{number} is a draft"
+        c = self.github.checks(project.repo.name, pr.head_sha, project.repo.required_checks)
+        if c.ci == "red":
+            return pr, "CI failed (" + ", ".join(c.failing) + ")"
+        if c.ci == "pending":
+            return pr, "CI is still running"
+        if c.ci == "none":
+            return pr, "there is no CI result for the latest commit"
+        if pr.mergeable is False:
+            return pr, f"it conflicts with {pr.base}"
+        if pr.mergeable is None:
+            return pr, "GitHub has not finished checking for conflicts; try again in a moment"
+        return pr, None
+
+    def _merge(self, project: Project, room: str, sender: str, cmd: Command) -> str:
+        target = cmd.args[0]
+        if not self._is_member(project, sender):
+            return self._deny(project, sender, "repo.merge", target, "you are not a member of this project")
+        if not target.isdigit():
+            return f"Usage: {USAGE['merge']}"
+        if (msg := self._repo_ready(project)):
+            return msg
+        # Refuse early (and say why) when the PR is not mergeable, before asking anyone to approve.
+        # The role check runs first, so a viewer learns nothing about PR state.
+        d = evaluate(self.cfg.policy, project=project.name, identity=sender, is_human=True, action="repo.merge", target=target)
+        if d.verdict is Verdict.DENY:
+            return self._deny(project, sender, "repo.merge", target, d.reason, name=self._name(sender))
+        try:
+            pr, reason = self._merge_blockers(project, int(target))
+        except GitHubError as exc:
+            return self._deny(project, sender, "repo.merge", target, f"could not reach GitHub ({exc})", name=self._name(sender))
+        if reason:
+            return self._deny(project, sender, "repo.merge", target, reason, name=self._name(sender))
+        out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action="repo.merge", target=target,
+                                     args={"sha": pr.head_sha}, room_id=room, name=self._name(sender))
+        if out.status == "denied":
+            return f"Denied: {out.reason}."
+        return self._prompt(out.approval_id, "repo.merge", target, {}, self._name(sender),
+                            extra=f" ({pr.title!r}, CI green, head {pr.head_sha[:7]})")
+
+    def _run_merge(self, project: Project, actor: str, number: int, sha: str, approved_by: str | None) -> str:
+        """Merge after approval: check everything again, merge pinned to the approved commit, then deploy."""
+        repo, who = project.repo, self._name(actor)
+        try:
+            pr, reason = self._merge_blockers(project, number)
+            if reason is None and pr.head_sha != sha:
+                reason = "the branch changed after approval was requested; ask again"
+            if reason:
+                self.gk.audit.write(project=project.name, actor=actor, event="failed", action="repo.merge", target=str(number),
+                                    error=reason, name=who, approved_by=approved_by)
+                return f"Not merged: {reason}. Nothing was changed."
+            merged = self.github.merge(repo.name, number, sha, repo.merge_method)
+        except GitHubError as exc:
+            self.gk.audit.write(project=project.name, actor=actor, event="failed", action="repo.merge", target=str(number),
+                                error=str(exc), name=who, approved_by=approved_by)
+            return f"Failed: merge #{number}: {exc}. Nothing was changed."
+        self.gk.audit.write(project=project.name, actor=actor, event="executed", action="repo.merge", target=str(number),
+                            result=f"merged {merged[:7]}", name=who, approved_by=approved_by)
+        by = f", approved by {self._name(approved_by)}" if approved_by else ""
+        text = f"Done: merged PR #{number} ({repo.merge_method}, {merged[:7]}) for {who}{by}."
+        if repo.app:
+            try:
+                result = self.coolify.deploy(project.apps[repo.app])
+                self.gk.audit.write(project=project.name, actor=actor, event="executed", action="coolify.deploy", target=repo.app,
+                                    result=result[:120], name=who, via="merge")
+                text += f" Deploy of {repo.app} queued."
+            except CoolifyError as exc:
+                self.gk.audit.write(project=project.name, actor=actor, event="failed", action="coolify.deploy", target=repo.app,
+                                    error=str(exc), name=who, via="merge")
+                text += f" The merge succeeded but the deploy failed: {exc}. Run `@gatekeeper deploy {repo.app}` to retry."
+        return text
+
     # -- change commands ------------------------------------------------------
 
     def _change(self, project: Project, room: str, sender: str, cmd: Command) -> str:
@@ -180,10 +307,11 @@ class Service:
             return self._prompt(out.approval_id, action, target, args, self._name(sender))
         return self._run(project, sender, action, target, args)
 
-    def _prompt(self, approval_id: str | None, action: str, target: str, args: dict, who: str, agent: str | None = None) -> str:
+    def _prompt(self, approval_id: str | None, action: str, target: str, args: dict, who: str, agent: str | None = None,
+                extra: str = "") -> str:
         minutes = self.cfg.policy.approval_timeout_seconds // 60
         verb = action.split(".", 1)[1]
-        what = f"{verb} {target}" + (f" {args['tag']}" if args.get("tag") else "")
+        what = f"{verb} {'PR #' if verb == 'merge' else ''}{target}" + (f" {args['tag']}" if args.get("tag") else "") + extra
         by = f"{agent} proposes, for {who}" if agent else f"requested by {who}"
         return (f"Approval needed (id {approval_id}): {what}, {by}. An owner, or another maintainer, can reply "
                 f"`@gatekeeper approve {approval_id}`. `@gatekeeper deny {approval_id}` cancels. It expires in {minutes} minutes.")
@@ -199,6 +327,8 @@ class Service:
         if out.status != "approved":
             return f"Denied: {out.reason}."
         r = out.request or {}
+        if r["action"] == "repo.merge":
+            return self._run_merge(project, r["requester"], int(r["target"]), r["args"].get("sha", ""), sender)
         return self._run(project, r["requester"], r["action"], r["target"], r["args"], approved_by=sender)
 
     # -- execution ------------------------------------------------------------
@@ -236,7 +366,8 @@ class Service:
         read waits for a fresh human approval in chat."""
         args = dict(args or {})
         who = f"agent:{agent}"
-        if not action.startswith("coolify."):
+        read_repo = action in ("repo.pr_list", "repo.pr_status")
+        if not (action.startswith("coolify.") or read_repo):
             return {"status": "denied", "reason": "unsupported action"}
         with self.lock:
             m = self.recent.get(message_id)
@@ -252,7 +383,7 @@ class Service:
             project = self.cfg.project_for_room(m["room"]) if m else None
             if reason is None and project is None:
                 reason = "the cited message is not in a Shipyard room"
-            if reason is None and target.lower() not in m["body"].lower():
+            if reason is None and not read_repo and target.lower() not in m["body"].lower():
                 reason = "the cited message does not mention the target"
             if reason is None and not self._is_member(project, m["sender"]):
                 reason = "the person who wrote the message is not a project member"
@@ -263,9 +394,13 @@ class Service:
                 return {"status": "denied", "reason": reason}
             m["used"] = True
             requester, room = m["sender"], m["room"]
-        if target not in project.apps and action != "audit.read":
-            return {"status": "denied", "reason": f"unknown app {target!r}"}
         name = self._name(requester)
+        if read_repo:                      # reads need no approval; the person's own role still applies
+            cmd = Command("prs", ()) if action == "repo.pr_list" else Command("pr", (target,))
+            text = self._repo_read(project, room, requester, cmd)
+            return {"status": "denied" if text.startswith("Denied") else "done", "result": text}
+        if target not in project.apps:
+            return {"status": "denied", "reason": f"unknown app {target!r}"}
         out = self.gk.request_action(project=project.name, identity=requester, is_human=True, action=action,
                                      target=target, args=args, room_id=room, kind="agent_proposal",
                                      force_approval=True, via=agent, message_id=message_id, name=name)

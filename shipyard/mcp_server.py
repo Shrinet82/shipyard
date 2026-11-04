@@ -23,7 +23,7 @@ TOOL = {
         "asked you. You hold no write access yourself. Cite `message_id`, the id of that person's message. "
         "Reads run at once; deploys, restarts and rollbacks are posted in the room for a person to approve, so "
         "tell them the approval id and do not retry. Actions: coolify.status, coolify.deploy, coolify.restart, "
-        "coolify.rollback."
+        "coolify.rollback, repo.pr_list (target: any word), repo.pr_status (target: the PR number). You cannot merge."
     ),
     "inputSchema": {
         "type": "object",
@@ -38,7 +38,7 @@ TOOL = {
     },
     "annotations": {"readOnlyHint": False, "destructiveHint": False},
 }
-ALLOWED_ACTIONS = {"coolify.status", "coolify.deploy", "coolify.restart", "coolify.rollback"}
+ALLOWED_ACTIONS = {"coolify.status", "coolify.deploy", "coolify.restart", "coolify.rollback", "repo.pr_list", "repo.pr_status"}
 
 
 def make_handler(service: Service, token: str):
