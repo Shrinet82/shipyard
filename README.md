@@ -62,7 +62,7 @@ Commands are mentions, never a `!` prefix, because Switch uses `!` for its own c
 
 ## Install
 
-You need a machine that already runs **Switch** (with its admin login in `~/switch/.env`). Coolify, a GitHub App and a Kubernetes cluster are optional; Shipyard asks about each and skips what you leave blank.
+You need a machine that already runs **Switch** (with its admin login in `~/switch/.env`); on a blank Ubuntu machine, `scripts/install-switch.sh` sets one up with Docker and the bundled Mattermost. A brand-new Switch has no rooms, so `init` creates `<project>-ops` and `<project>-maintainers` for you. Coolify, a GitHub App and a Kubernetes cluster are optional; Shipyard asks about each and skips what you leave blank.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shrinet82/shipyard/main/scripts/install.sh | bash
@@ -147,4 +147,4 @@ python3 -m pytest        # 554 tests, no network
 
 ## Status
 
-Built in five phases during the hackathon; each ended in something that ran. Every phase was verified live on Mattermost (alerts, approvals, rollback, merge and deploy, Kubernetes, shell, the SBOM gate and the dashboard). On Discord the commands, approvals, rollback and merge were verified. Not done: the Slack run, Coolify container exec (it needs root-equivalent Docker access), and the stretch item of applying a reviewer's suggestion to a pull request. The installer is tested against fakes and a dry run on a live machine; a timed run on a clean VM is still to do.
+Built in five phases during the hackathon; each ended in something that ran. Every phase was verified live on Mattermost (alerts, approvals, rollback, merge and deploy, Kubernetes, shell, the SBOM gate and the dashboard). On Discord the commands, approvals, rollback and merge were verified. Not done: the Slack run, Coolify container exec (it needs root-equivalent Docker access), and the stretch item of applying a reviewer's suggestion to a pull request. The installer was run on a clean Ubuntu VM (t3.large, then terminated): Switch from nothing took about 8 minutes (mostly image pulls), `scripts/install.sh` 25 seconds, and from `whoami` to the owner's first real command 16 seconds. That run found and fixed three bugs (no rooms on a new Switch, a JSON-only HTTP helper, re-running).
