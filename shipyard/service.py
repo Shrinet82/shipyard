@@ -248,7 +248,8 @@ class Service:
         try:
             pr, reason = self._merge_blockers(project, int(target))
         except GitHubError as exc:
-            return self._deny(project, sender, "repo.merge", target, f"could not reach GitHub ({exc})", name=self._name(sender))
+            why = f"there is no pull request #{target}" if "404" in str(exc) else f"could not reach GitHub ({exc})"
+            return self._deny(project, sender, "repo.merge", target, why, name=self._name(sender))
         if reason:
             return self._deny(project, sender, "repo.merge", target, reason, name=self._name(sender))
         out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action="repo.merge", target=target,

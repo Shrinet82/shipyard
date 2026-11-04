@@ -230,6 +230,20 @@ def test_merge_succeeds_but_deploy_fails_is_reported_honestly(env):
     assert not any("Deploy of demo-web queued" in t for _, t in env.posts)
 
 
+def test_merging_a_pr_that_does_not_exist_says_so(env):
+    env.gh.pr = lambda repo, n: (_ for _ in ()).throw(GitHubError("GitHub answered 404: Not Found"))
+    env.say(OWNER, "merge 99")
+    assert "there is no pull request #99" in env.last()
+
+
+def test_assigned_issues_for_an_unknown_login_is_empty():
+    class Http422:
+        def __call__(self, method, url, headers, body):
+            return (200, {"token": "t", "expires_at": "2099-01-01T00:00:00Z"}) if url.endswith("/access_tokens") else (422, {"message": "Validation Failed"})
+    app = GitHubApp("1", "k", installation_id="9", http=Http422(), sign=lambda m: b"s")
+    assert app.assigned_issues("o/r", "nobody") == []
+
+
 def test_merge_usage_and_non_members(env):
     env.say(OWNER, "merge six")
     assert env.last().startswith("Usage")

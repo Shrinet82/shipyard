@@ -157,7 +157,12 @@ class GitHubApp:
         return evaluate_checks(data.get("check_runs", []), required)
 
     def assigned_issues(self, repo: str, login: str) -> list[dict[str, Any]]:
-        rows = self._call("GET", f"/repos/{repo}/issues?assignee={login}&state=open&per_page=50")
+        try:
+            rows = self._call("GET", f"/repos/{repo}/issues?assignee={login}&state=open&per_page=50")
+        except GitHubError as exc:
+            if "422" in str(exc) or "404" in str(exc):      # GitHub does not know that login: nobody is assigned
+                return []
+            raise
         return [r for r in rows if "pull_request" not in r]
 
     def merge(self, repo: str, number: int, sha: str, method: str = "squash") -> str:
