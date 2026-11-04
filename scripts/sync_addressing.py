@@ -23,6 +23,8 @@ def main():
     ap.add_argument("--base", default="http://localhost:8000")
     ap.add_argument("--agent", action="append", required=True)
     ap.add_argument("--project", default=None, help="default: every project's members")
+    ap.add_argument("--allow-agent", action="append", default=[],
+                    help="another agent that may address these agents (e.g. gatekeeper, so alerts can wake the Ops Agent)")
     a = ap.parse_args()
     cfg = yaml.safe_load(open(os.path.expanduser(a.config)))
     env = dict(l.strip().split("=", 1) for l in open(os.path.expanduser(a.switch_env)) if "=" in l and not l.startswith("#"))
@@ -68,6 +70,8 @@ def main():
         # the owner keeps access everywhere. Platform and agent senders are not admitted.
         policy = {"rules": [
             {"rooms": rooms, "users": user_ids, "agents": [], "owner": False, "platform": False},
+            *([{"rooms": rooms, "users": [], "agents": [ids[n] for n in a.allow_agent], "owner": False, "platform": False}]
+              if a.allow_agent else []),
             {"rooms": "*", "users": [], "agents": [], "owner": True, "platform": False}]}
         s, r = call("PUT", f"/agents/{ids[name]}/addressing-policy", {"policy": policy})
         print(name, "addressing policy:", s, f"({len(user_ids)} of {len(members)} members resolved, {len(rooms)} rooms)")
