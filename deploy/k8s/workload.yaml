@@ -1,0 +1,42 @@
+# Demo workload for the Kubernetes backend. The Secret exists so we can prove nobody but the platform can read it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-secret
+  namespace: demo
+type: Opaque
+stringData:
+  password: not-a-real-secret-demo-value
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-k8s
+  namespace: demo
+  labels: {app: demo-k8s}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: demo-k8s}
+  template:
+    metadata:
+      labels: {app: demo-k8s}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27-alpine
+          ports: [{containerPort: 80}]
+          env:
+            - name: DEMO_PASSWORD
+              valueFrom: {secretKeyRef: {name: demo-secret, key: password}}
+          readinessProbe:
+            httpGet: {path: /, port: 80}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 128Mi}

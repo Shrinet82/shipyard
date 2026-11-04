@@ -1,0 +1,77 @@
+# Three ServiceAccounts, each the least a job needs, all inside the `demo` namespace.
+#   shipyard-viewer   built-in `view` role: read pods, logs, deployments, events. No Secrets, no exec.
+#   shipyard-deployer view + restart/rollback (patch deployments) + scale. Held by the Gatekeeper only.
+#   shipyard-ops      list pods + exec into them. Held by the Gatekeeper only, for owner-approved exec.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: shipyard-viewer, namespace: demo}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: shipyard-deployer, namespace: demo}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: shipyard-ops, namespace: demo}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: shipyard-viewer, namespace: demo}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: view}
+subjects: [{kind: ServiceAccount, name: shipyard-viewer, namespace: demo}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: shipyard-deployer-view, namespace: demo}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: view}
+subjects: [{kind: ServiceAccount, name: shipyard-deployer, namespace: demo}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: shipyard-deployer, namespace: demo}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: shipyard-deployer, namespace: demo}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: shipyard-deployer}
+subjects: [{kind: ServiceAccount, name: shipyard-deployer, namespace: demo}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: shipyard-ops, namespace: demo}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: shipyard-ops, namespace: demo}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: shipyard-ops}
+subjects: [{kind: ServiceAccount, name: shipyard-ops, namespace: demo}]
+---
+# Long-lived tokens (the API server fills them in); one per ServiceAccount.
+apiVersion: v1
+kind: Secret
+metadata: {name: shipyard-viewer-token, namespace: demo, annotations: {kubernetes.io/service-account.name: shipyard-viewer}}
+type: kubernetes.io/service-account-token
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: shipyard-deployer-token, namespace: demo, annotations: {kubernetes.io/service-account.name: shipyard-deployer}}
+type: kubernetes.io/service-account-token
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: shipyard-ops-token, namespace: demo, annotations: {kubernetes.io/service-account.name: shipyard-ops}}
+type: kubernetes.io/service-account-token
