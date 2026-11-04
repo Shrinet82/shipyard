@@ -73,7 +73,7 @@ A tiny web app with a `Dockerfile` and a GitHub Actions workflow that runs a uni
 |---|---|---|
 | 1 | Add a health endpoint | CI green; opened and green alerts |
 | 2 | Break the Docker build (CI still passes: the test does not build the image) | merge allowed, deploy fails, alert, diagnosis, rollback approved |
-| 3 | Change the greeting | `merge 3`: checks, approval, merge, deploy succeeds |
+| 6 | Bump the footer to v2 (originally #3; it conflicted because it sat next to a line main changed, so it was reopened from current main as #6) | `merge 6`: checks, approval, merge, deploy succeeds |
 | 4 | A failing test | CI red alert; `merge 4` refused with the reason |
 | 5 | Conflicts with `main` | conflict alert; `merge 5` refused |
 
@@ -92,18 +92,49 @@ A tiny web app with a `Dockerfile` and a GitHub Actions workflow that runs a uni
 
 - [ ] Break a build on purpose: an alert appears in the ops room (Mattermost and Discord), the Ops Agent
       diagnoses in three lines with options, and a rollback approved in chat restores the app.
-- [ ] `merge 3` goes through checks, approval, merge and deploy; `merge 4` and `merge 5` are refused with reasons.
+- [ ] `merge 6` goes through checks, approval, merge and deploy; `merge 4` and `merge 5` are refused with reasons.
 - [ ] PR alerts for opened, CI result and conflict; a stale alert at a shortened threshold.
 - [ ] `@gatekeeper digest` answers on demand, and the scheduled digest posts (verified with a near-term schedule).
 - [ ] The Ops Agent holds only a Read-only Coolify token, and Coolify refuses a write attempt.
 - [ ] All attack cases pass as automated tests, and the live ones are run once by hand.
 
+## Progress (Nov 4, 2026)
+
+| # | Item | State |
+|---|---|---|
+| 1 to 3 | Config, webhook listener, evidence and redaction | done, 183 tests |
+| 4 | Alert and Ops Agent wake-up | **verified live** on Mattermost and Discord with a real-shaped webhook sent across the VPC |
+| 5 to 9 | GitHub client, poller, repo reads, merge, digest | built and tested against fakes; **waiting for the GitHub App** to run live |
+| 10 | Demo repo, five PRs, Coolify app `demo-web` | repo and PRs exist, app deployed; **GitHub Actions does not run for the repo** (see below) |
+| 11 | Read-only Coolify token | waiting for the token |
+
+Live results: a wrong webhook secret gets 404; the real event gets 200; the alert shows the last lines of the actual build log,
+secrets removed; the Ops Agent diagnosed it in a few lines, and noticed that the test alert contradicted the deployment's real
+state (finished, running). On Discord a plain `@ops-agent` in the Gatekeeper's message is a real wake-up.
+
+## Findings while building
+
+- **GitHub Actions never ran** for `shipyard-demo`: zero runs and no Actions check suite, even for a plain push to `main`, with
+  Actions enabled for the repo and GitHub reporting no incident. The only check on a PR is GitGuardian, a scanner already on the
+  account. This blocks "CI green". It needs a look at the repo's Actions tab and the account's Actions settings.
+- A change on the line next to one that main changed also conflicts (git compares whole hunks), so demo PRs must be based on the
+  current `main` unless a conflict is intended.
+- Creating a Discord channel through Switch needs an explicit `channel_type` (`channel_public`).
+- Coolify's webhook has no authentication and its SSRF guard blocks private addresses until allow-listed in Settings, Advanced.
+- Real tokens must never appear in test fixtures: a first draft of the redaction tests contained live tokens, caught before commit.
+  Tests use made-up tokens of the same shape.
+
 ## What the owner has to do (the Gatekeeper cannot)
 
-1. **Coolify, Settings, Advanced:** add the build VM's private address `172.31.10.178` to "webhook allowed internal hosts".
-   Then **Notifications, Webhook:** enable it, paste the URL the Gatekeeper prints, tick Deployment failure and Status change.
-2. **GitHub App:** create it (settings below), generate a private key, install it on the demo repo, and copy the key to the
-   build VM. Give the App ID. Permissions: Contents read and write, Pull requests read and write, Checks read,
-   Commit statuses read, Issues read, Metadata read. Webhook: off.
-3. **Approve creating the public repo** `Shrinet82/shipyard-demo`.
-4. **A Read-only Coolify token** named `shipyard-read`.
+1. **GitHub Actions.** Open https://github.com/Shrinet82/shipyard-demo/actions and report what it shows (a banner usually says why).
+   Also check https://github.com/settings/billing for any Actions restriction.
+2. **Coolify, Settings, Advanced:** add `172.31.10.178` to "webhook allowed internal hosts" and save. Then **Notifications, Webhook:**
+   enable it, paste the URL from `python -m shipyard webhook-url --host 172.31.10.178` (run on the build VM), and tick
+   Deployment failure and Status change.
+3. **GitHub App** (GitHub, Settings, Developer settings, GitHub Apps, New): name it uniquely (for example `shipyard-gatekeeper-shrinet82`);
+   homepage `https://github.com/Shrinet82/shipyard`; **webhook off**; repository permissions Contents read and write, Pull requests read
+   and write, Checks read, Commit statuses read, Issues read (Metadata is added automatically); install only on this account. After
+   creating: note the **App ID**, generate a **private key** (a `.pem` downloads), then **Install App** on the repository
+   `shipyard-demo` only. Copy the key to the VM with `scripts/vm.sh put ~/Downloads/<file>.pem '~/shipyard-github.pem'` and tell
+   me the App ID. Never commit the key.
+4. **A Read-only Coolify token** named `shipyard-read` for the Ops Agent.
