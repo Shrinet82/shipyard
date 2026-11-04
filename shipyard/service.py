@@ -219,6 +219,8 @@ class Service:
             return pr, f"PR #{number} is {pr.state}"
         if pr.draft:
             return pr, f"PR #{number} is a draft"
+        if pr.mergeable is False:           # first: GitHub does not run CI on a conflicting PR, so "no CI" would mislead
+            return pr, f"it conflicts with {pr.base}"
         c = self.github.checks(project.repo.name, pr.head_sha, project.repo.required_checks)
         if c.ci == "red":
             return pr, "CI failed (" + ", ".join(c.failing) + ")"
@@ -226,8 +228,6 @@ class Service:
             return pr, "CI is still running"
         if c.ci == "none":
             return pr, "there is no CI result for the latest commit"
-        if pr.mergeable is False:
-            return pr, f"it conflicts with {pr.base}"
         if pr.mergeable is None:
             return pr, "GitHub has not finished checking for conflicts; try again in a moment"
         return pr, None

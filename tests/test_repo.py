@@ -172,6 +172,7 @@ def test_only_maintainers_and_owners_can_ask_to_merge(env, sender, why):
 @pytest.mark.parametrize("make,reason", [
     (lambda: (pr(4, sha="b" * 40), "red", ("test",)), "CI failed (test)"),
     (lambda: (pr(5, mergeable=False), "green", ()), "conflicts with main"),
+    (lambda: (pr(12, mergeable=False), "none", ()), "conflicts with main"),     # CI never ran: still say conflict
     (lambda: (pr(7), "pending", ()), "still running"),
     (lambda: (pr(8), "none", ()), "no CI result"),
     (lambda: (pr(9, draft=True), "green", ()), "draft"),
