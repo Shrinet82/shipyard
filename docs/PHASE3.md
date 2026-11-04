@@ -45,6 +45,12 @@ Phase 4 does not start until every box in the exit gate at the bottom is checked
 9. **Supply chain.** Binaries are pinned and verified against published checksums, and recorded in the repo. This is also the sort of
    thing Phase 4's SBOM report will show.
 
+10. **Agent isolation (added after testing).** Asked to report file sizes, the Ops Agent could read the full-access Coolify token
+    (103 bytes) and the cluster-admin kubeconfig (2,995 bytes): agents ran as the platform's own Linux user. They now run as a dedicated
+    unprivileged user (`agentrun`: no sudo, no Docker, `/home/ubuntu`, `/root` and `/etc/shipyard` hidden by the service unit). The only
+    credentials they hold are the Gatekeeper's request tool and the read-only, Secret-blind Kubernetes viewer. They hold no Coolify, GitHub
+    or cluster-admin credential at all, so the read-only Coolify token is no longer needed for them.
+
 ## Command surface (same words on both backends)
 
 | Command | Coolify app | Kubernetes app | Role | Approval |
@@ -87,20 +93,50 @@ Phase 4 does not start until every box in the exit gate at the bottom is checked
 - Stolen SSH key used for a different command or with a tty: the forced command ignores it.
 - Cluster unreachable or a token revoked: the action fails and nothing is reported as done.
 
+## Results (Nov 4, 2026, live on the build VM, Mattermost with a test account per role)
+
+| Check | Result |
+|---|---|
+| `status` for all three apps | Coolify and Kubernetes apps in one reply |
+| `logs`, `events` on a Coolify app and a Kubernetes app | both work; secrets in logs are redacted and mentions defused |
+| Viewer `restart demo-k8s` | Denied: needs role deployer or above |
+| Deployer `restart`, `scale demo-k8s 3` | ran |
+| `scale demo-k8s 9999`, `scale demo-k8s 1;rm` | Failed with nothing changed; Denied for the invalid value |
+| `deploy demo-k8s`, `scale demo-web 2` | "not supported", with the right command suggested |
+| Deployer `rollback demo-k8s`, then self-approval, then owner | approval needed; denied; ran. `rollback demo-k8s 1` changed the image from 1.28 to 1.27 |
+| Maintainer, deployer or viewer: `shell prod df -h`, `exec demo-k8s id` | Denied: needs role owner or above |
+| Owner: `shell prod cat /etc/shadow`, `df -h; id` | refused before anyone was asked |
+| Owner: `shell prod df -h`, then approve | ran on the production VM; the disk table came back redacted |
+| Owner: `exec demo-k8s env` | refused (not in the pod allowlist); `exec demo-k8s id` ran after approval |
+| Real attempts per credential | viewer: logs yes, exec/Secret/scale no. Deployer: scale yes, exec/Secret no. Ops: exec yes, logs/Secret/scale no |
+| Stolen SSH key for `shipyard-ops` | wrapper refused `cat /etc/shadow`, `../` paths, `;`, `bash`, `env`, `sudo`, no command; tty refused; stdio port forward "administratively prohibited"; every call logged on the VM |
+| Agent MCP server (read-only, denied Secrets) | 13 tools, none able to change anything; pods listed; Secret refused |
+| **Both MCP fences switched off, viewer credential only** | Secret read, object create and Deployment delete: all Forbidden by the API server. (Pod delete and exec returned "not found" for the made-up pod name, so they are covered by the direct `kubectl` tests above.) |
+| Isolation | as `agentrun`: `/home/ubuntu/coolify.env`, `switch/.env`, `admin.kubeconfig` all "Permission denied"; `docker ps` refused; `sudo` asks for a password |
+| Isolated agents' real work | the Ops Agent listed pods and was refused the Secret through its tools, read a status through the Gatekeeper, and diagnosed an alert |
+
+## Findings
+
+- `kubectl auth can-i` is unreliable for subresources (it said the ops credential could not exec while it could); real attempts are the test.
+- The plain `rollback` goes to the previous *revision*, and `restart` creates a revision, so right after a restart "previous" is the same image.
+  `rollback <app> <revision>` picks one.
+- **Codex's command sandbox cannot start for the isolated user** (`bwrap: loopback: Failed RTM_NEWADDR`), even without the unit restrictions.
+  So these agents have no working shell. That is the safe direction for agents whose job is MCP tools, and the OS blocks file reads anyway.
+- Coolify's `get_logs` returns a JSON wrapper; an empty log is now shown as empty.
+- Switch's built-in separate-user mode takes provider logins from its Console or API keys, so a ChatGPT sign-in is awkward there; a dedicated Linux user
+  with a hardened service unit gave the same isolation with a one-time login.
+- The Gatekeeper's `shell` and `exec` run no model-written text: owner, approval, allowlist, argument lists, a second allowlist on the host.
+
 ## Exit gate
 
-- [ ] The same chat commands work on a Coolify app and a Kubernetes app: `status`, `logs`, `events`, `restart`, `rollback` (with approval) and `scale` for Kubernetes.
-- [ ] A viewer cannot read Secrets even if the Gatekeeper is bypassed: shown with the viewer credential against the API and through the agents' MCP server.
-- [ ] `shell prod df -h` runs for the owner after approval; the attack cases above are refused.
-- [ ] `exec` in a pod runs for the owner after approval.
-- [ ] All attack cases pass as automated tests, and the live ones are run once by hand.
+- [x] The same chat commands work on a Coolify app and a Kubernetes app: `status`, `logs`, `events`, `restart`, `rollback` (with approval) and `scale` for Kubernetes.
+- [x] A viewer cannot read Secrets even if the Gatekeeper is bypassed: shown with the viewer credential against the API and through the agents' MCP server with its own fences off.
+- [x] `shell prod df -h` runs for the owner after approval; the attack cases above are refused.
+- [x] `exec` in a pod runs for the owner after approval.
+- [x] All attack cases pass as automated tests (417), and the live ones were run by hand.
+- [x] Agents cannot read the platform's secrets: shown before (it could) and after (it cannot).
 
-## Cut order if time runs short
+## Open
 
-Pod exec first, then the Kubernetes write actions (`restart`, `rollback`, `scale`), then the production shell. The read path, the RBAC proof
-and `logs`/`events` on both backends stay, because they carry the exit gate. Phase 5 is never cut.
-
-## What the owner has to do
-
-Nothing is blocking. Two small things carry over: the **Read-only Coolify token** for the Ops Agent (still open from Phase 2), and
-approval to download and install the pinned tools above on the build VM.
+- Coolify container exec was left out on purpose (it needs root-equivalent Docker access).
+- The Switch stack runs as root through Docker and the agents' MCP token sits in their own config: by design, the token only grants `request_action`.

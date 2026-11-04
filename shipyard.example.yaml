@@ -25,6 +25,15 @@ digest:
   minute: 0
   timezone: Asia/Kolkata
 
+hosts:                                        # production VMs reachable by the allowlisted `shell` command
+  prod:
+    ssh: shipyard-ops@10.0.0.2                # the forced-command account (see deploy/ops-shell)
+    key_file: ~/.ssh/shipyard-ops
+kubernetes:                                   # one least-privilege ServiceAccount credential per kind of action
+  kubectl: /usr/local/bin/kubectl
+  max_replicas: 10
+  kubeconfigs: {viewer: ~/kube/viewer.kubeconfig, deployer: ~/kube/deployer.kubeconfig, ops: ~/kube/ops.kubeconfig}
+
 projects:
   demo:
     rooms:                                    # Switch room ids
@@ -32,6 +41,7 @@ projects:
       maintainers: ["00000000-0000-0000-0000-000000000002"]  # PR alerts and the digest
     apps:                                     # app name -> Coolify application uuid
       demo-web: "aaaaaaaaaaaaaaaaaaaaaaaa"
+      demo-k8s: {backend: k8s, namespace: demo, deployment: demo-k8s}   # namespace comes from here, never from chat
     repo:
       name: owner/repo
       app: demo-web                           # deployed after a merge
