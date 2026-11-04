@@ -138,6 +138,7 @@ Built and verified live on the build VM, in Mattermost. Automated tests: 535 pas
 - **Clean PR #8.** The report was posted, `merge 8` asked for the usual approval with no gate, a second person approved, it merged and deployed, and the release moved to the merged commit with PR #8's report as its baseline.
 - **Vulnerable PR #7** (Django 2.2.0). Grype found **6 new critical CVEs**. `merge 7` answered `BLOCKED by the SBOM gate` with the CVE ids. The maintainer's approval was refused (`only an owner can override a security block`), the owner's approval merged and deployed, a replay was refused, and the audit log has `gate_blocked`, `approval_rejected` and `gate_override` rows with the CVE ids.
 - **Dashboard** through `scripts/vm.sh tunnel`: signed in with a device code typed in chat; overview, audit (chain verified), approvals, SBOM list and detail with downloads, backends (Coolify, Kubernetes, GitHub rate limit, Switch, production host disk, agents), roles and agent access. A role removal took effect in chat at once, the preview showed the two policy changes, the sync applied them, and the next preview was empty.
+- **Workflow-editing PR #9** (adds a comment to `ci.yml`): CI was green and produced a clean-looking SBOM, but the report said `SBOM unverified: this change edits .github/workflows/` and `merge 9` was `BLOCKED` with an owner-only override. The approval was then denied.
 - **Hand-run attacks:** no token, a wrong token, a foreign `Host` header and a cross-origin POST were all refused.
 
 ### Deviations from the scope, and why
