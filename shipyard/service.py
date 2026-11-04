@@ -218,7 +218,8 @@ class Service:
         for r in reversed(rows):
             when = dt.datetime.fromtimestamp(r["ts"], dt.timezone.utc).strftime("%H:%M:%S")
             who = r["detail"].get("name") or self._name(r["actor"])
-            extra = r["detail"].get("reason") or r["detail"].get("result") or r["detail"].get("error") or ""
+            extra = (r["detail"].get("reason") or r["detail"].get("result") or r["detail"].get("error")
+                     or (", ".join(map(str, r["detail"]["cves"][:4])) if isinstance(r["detail"].get("cves"), list) else ""))
             lines.append(f"{when} {who} {r['event']} {r['action']} {r['target']}" + (f" ({extra})" if extra else ""))
         return "Audit log (UTC):\n" + "\n".join(lines)
 

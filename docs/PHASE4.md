@@ -92,14 +92,14 @@ and the audit trail; #8 sails through.
 
 ## Exit gate
 
-- [ ] A CI run's SBOM and scan are collected and reported in chat, with packages added, removed and upgraded, and CVEs by severity.
-- [ ] A PR adding a package with a new critical CVE: the report says deploy blocked; a maintainer's approval is refused; the owner's override
+- [x] A CI run's SBOM and scan are collected and reported in chat, with packages added, removed and upgraded, and CVEs by severity.
+- [x] A PR adding a package with a new critical CVE: the report says deploy blocked; a maintainer's approval is refused; the owner's override
       merges and deploys; the audit log shows the block and the override with the CVE ids.
-- [ ] A clean PR passes with no gate.
-- [ ] `@gatekeeper sbom` shows stored reports.
-- [ ] The dashboard (through a tunnel, with its token) shows the audit log with the gate events, pending approvals, SBOM reports with JSON and HTML,
+- [x] A clean PR passes with no gate.
+- [x] `@gatekeeper sbom` shows stored reports.
+- [x] The dashboard (through a tunnel, with its token) shows the audit log with the gate events, pending approvals, SBOM reports with JSON and HTML,
       and backend health; the owner changes a role and syncs agent access, both audited.
-- [ ] All attack cases pass as automated tests, and the live ones are run once by hand.
+- [x] All attack cases pass as automated tests, and the live ones are run once by hand.
 
 ## Cut order if time runs short
 
@@ -115,3 +115,41 @@ About eight hours: pipeline and parsers 2.5, gate 1.5, dashboard 3, live runs an
 - **One decision:** the dashboard as a small built-in page (recommended) or Next.js (about three hours more and an extra build to install).
 - **One approval:** a deliberately vulnerable dependency in a PR on the public demo repo. It may trigger GitHub Dependabot alert emails to you.
   It is labelled "demo only" and is never merged to the default deploy without the override scenario.
+
+## Results (Nov 5, 2026)
+
+Built and verified live on the build VM, in Mattermost. Automated tests: 535 pass (about 120 of them are new in this phase).
+
+### What was built
+
+| Piece | Where |
+|---|---|
+| Artifact download (redirect followed **without** our credentials, 25 MB cap) and PR file list | `shipyard/github.py` |
+| Safe zip and JSON reading, SPDX / CycloneDX / Grype parsing, diff by package URL, trust checks, report text and HTML | `shipyard/sbom.py` |
+| Per-commit report store, release records, baseline | `shipyard/sbomstore.py` |
+| Collector (polls PR heads and the default branch, posts to the maintainers rooms) | `shipyard/sbomwatch.py` |
+| The gate on `merge`, `deploy` and agent-proposed deploys; owner-only override; `sbom` command | `shipyard/service.py`, `shipyard/gatekeeper.py` |
+| Dashboard API, sign-in, role editor, agent-access sync, health | `shipyard/dashboard.py`, `dashauth.py`, `members.py`, `access.py`, `health.py` |
+| Dashboard pages (no framework, no build step, text-only rendering) | `shipyard/web/` |
+
+### How it behaves (live)
+
+- **Baseline.** `deploy demo-web` on a clean `main` head ran at once and recorded release `77a7745`.
+- **Clean PR #8.** The report was posted, `merge 8` asked for the usual approval with no gate, a second person approved, it merged and deployed, and the release moved to the merged commit with PR #8's report as its baseline.
+- **Vulnerable PR #7** (Django 2.2.0). Grype found **6 new critical CVEs**. `merge 7` answered `BLOCKED by the SBOM gate` with the CVE ids. The maintainer's approval was refused (`only an owner can override a security block`), the owner's approval merged and deployed, a replay was refused, and the audit log has `gate_blocked`, `approval_rejected` and `gate_override` rows with the CVE ids.
+- **Dashboard** through `scripts/vm.sh tunnel`: signed in with a device code typed in chat; overview, audit (chain verified), approvals, SBOM list and detail with downloads, backends (Coolify, Kubernetes, GitHub rate limit, Switch, production host disk, agents), roles and agent access. A role removal took effect in chat at once, the preview showed the two policy changes, the sync applied them, and the next preview was empty.
+- **Hand-run attacks:** no token, a wrong token, a foreign `Host` header and a cross-origin POST were all refused.
+
+### Deviations from the scope, and why
+
+1. **Sign-in is a device code, not a token posted in chat.** The design says to ask the Gatekeeper for a token in chat. A token in chat history is a secret in a log that others can read. Instead the dashboard shows a code, the person types `@gatekeeper dashboard-login <code>`, Switch tells us who typed it, and only the browser that asked for the code collects the session. The design's token field stays as a second way in, fed by `python -m shipyard dashboard-token --identity <id>` run on the VM.
+2. **Identities are shown as account names with the platform**, parsed from Switch's sender id, not as `discord:4182…`. The full id is on the Roles page, because that is what is pasted to add someone.
+3. **System fonts instead of Google Fonts.** The page loads nothing from another origin, so the CSP can say `default-src 'none'` plus `'self'`.
+4. **Versions are not release tags.** Rows are labelled by pull request or branch and short commit, as the demo repo has no release tags.
+5. **"Agents online"** is "registered in Switch and the runner service active". Switch does not expose a live flag for on-demand (Codex CLI) agents.
+
+### Residual risks, stated plainly
+
+- **CI output is trusted.** The SBOM comes from the repository's own workflow. A change to `.github/workflows/` cannot vouch for itself (gated as unverified), but anyone who can push to the default branch can change the workflow. Protect the branch (required reviews, CODEOWNERS on `.github/`). Signed attestations are out of scope.
+- **A deploy builds the branch as it is when Coolify pulls it**, which can be a commit newer than the one judged. The approval is pinned to the judged commit, and a moved head is refused just before the deploy runs, but the window between that check and Coolify's clone remains. On a protected default branch it is small.
+- **The dashboard is reachable by anyone with a shell on the VM** (it listens on loopback only). The `dashboard-token` command is for exactly those people.

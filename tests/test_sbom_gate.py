@@ -148,6 +148,17 @@ def test_new_critical_blocks_a_maintainer_but_an_owner_can_override(env):
     assert env.last().startswith("Denied") and len(env.gh.merges) == 1
 
 
+def test_the_chat_audit_shows_the_cves_of_a_block_and_an_override(env):
+    baseline(env)
+    env.col.add(SHA, [("django", "2.2.0")], CRIT, pr_=7)
+    env.gh.set(pr(7))
+    env.say(M1, "merge 7")
+    env.say(OWNER, f"approve {aid(env)}")
+    env.say(OWNER, "audit 12")
+    lines = env.last().splitlines()
+    assert any("gate_blocked" in ln and "CVE-2026-0001" in ln for ln in lines) and any("gate_override" in ln and "CVE-2026-0001" in ln for ln in lines)
+
+
 def test_override_is_pinned_to_the_commit(env):
     baseline(env)
     env.col.add(SHA, [("django", "2.2.0")], CRIT, pr_=7)
