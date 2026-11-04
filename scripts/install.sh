@@ -11,4 +11,5 @@ for p in python3 python3-yaml openssl git; do dpkg -s "$p" >/dev/null 2>&1 || ne
 if [ ${#need[@]} -gt 0 ]; then sudo apt-get update -qq && sudo apt-get install -y -qq "${need[@]}"; fi
 if [ -d "$DIR/.git" ]; then git -C "$DIR" pull --ff-only -q; else git clone -q https://github.com/Shrinet82/shipyard "$DIR"; fi
 cd "$DIR"
-exec python3 -m shipyard init "$@" < /dev/tty
+if [ ! -t 0 ] && [[ " $* " != *" --answers "* ]] && [ -r /dev/tty ]; then exec python3 -m shipyard init "$@" < /dev/tty; fi
+exec python3 -m shipyard init "$@"

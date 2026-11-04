@@ -1,0 +1,24 @@
+# python3 -m shipyard init --answers answers.yaml   (no questions asked; add --dry-run to check without writing)
+# Anything you leave out is skipped or defaulted; the ones marked "required" stop the install if missing.
+project: demo
+switch:
+  url: http://localhost:8000
+  env_file: ~/switch/.env            # Switch's .env: the admin login and AGENT_REGISTRATION_TOKEN
+rooms:                               # by name or id; a name selects every room of that name (Discord and Mattermost alike)
+  ops: [demo-ops, ops-base]
+  maintainers: [demo-maintainers, demo-prs]
+coolify:
+  url: http://10.0.0.5:8000          # blank to skip Coolify
+  # token: set the COOLIFY_TOKEN environment variable instead of writing it here
+  apps: [demo-web]                   # names as Coolify shows them; omit for all
+github:
+  app_id: "123456"                   # blank to skip repo features
+  private_key_file: ~/shipyard-github.pem
+  repo: owner/repo                   # required when app_id is set
+  deploy_app: demo-web               # deployed after a merge; one of the Coolify apps
+owner: ""                            # the id `@gatekeeper whoami` prints; or add it afterwards with `add-owner`
+dashboard: true
+agents:
+  create: "yes"                      # create the Ops and Repo agents from templates/agents/
+  controller: my-controller          # a Switch controller name
+  home: ~                            # directory the agents work in
