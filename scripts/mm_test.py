@@ -39,7 +39,7 @@ def create():
     team = mm("GET", f"/teams/name/{env['MATTERMOST_TEAM_NAME']}", tok=admin)[0]["id"]
     ch = channel_id(admin, "demo-ops")
     users = json.load(open(USERS)) if os.path.exists(USERS) else {}
-    for name in ("owner", "deployer", "viewer"):
+    for name in ("owner", "deployer", "viewer", "guest"):
         uname = f"sy-{name}"
         if uname not in users:
             users[uname] = secrets.token_urlsafe(18)
