@@ -25,12 +25,12 @@ RAHUL = f"@switch-mattermost-{BRIDGE}-rahul:localhost"
 
 class FakeGateway:
     def __init__(self):
-        self.calls, self.fail = [], False
+        self.calls, self.fail, self.bridges = [], False, {}
 
     def call(self, method, path, body=None):
         self.calls.append((method, path, body))
         if method == "GET" and path.startswith("/rooms/"):
-            return 200, {"bridge_id": "bridge-1", "group_id": "group-1"}
+            return 200, {"bridge_id": self.bridges.get(path.rsplit("/", 1)[1], BRIDGE), "group_id": "group-1"}
         if method == "POST" and path == "/rooms":
             if self.fail:
                 return 403, "no"
@@ -252,10 +252,22 @@ def test_desks_are_private_rooms_with_the_member_and_the_owners(env):
     posts = [c[2] for c in env.gw.calls if c[0] == "POST"]
     anya = next(b for b in posts if b["name"] == "demo-desk-anya")
     assert anya["channel_type"] == "channel_private" and anya["user_names"] == ["anya", "oscar"] and anya["agent_names"] == ["repo-agent", "gatekeeper"]
-    assert anya["bridge_id"] == "bridge-1" and anya["group_id"] == "group-1"
+    assert anya["bridge_id"] == BRIDGE and anya["group_id"] == "group-1"
     assert env.cfg.desks["demo"][ANYA].startswith("desk-room-") and json.loads(env.desks_file.read_text())["demo"][ANYA] == env.cfg.desks["demo"][ANYA]
     assert env.svc.desks.missing(env.cfg.projects["demo"]) == []
     assert "desk_created" in [r["event"] for r in env.gk.audit.recent("demo", 50)]
+
+
+def test_a_member_on_another_chat_app_gets_a_desk_there_or_a_clear_problem(env):
+    other = "11111111-1111-1111-1111-111111111111"
+    drew = f"@switch-discord-{other}-drew:localhost"
+    env.cfg.policy.members["demo"][drew] = Role.OWNER
+    made, problems = env.svc.desks.create(env.cfg.projects["demo"], OSCAR, [drew, ANYA])
+    assert made == ["demo-desk-anya"] and "no room on their chat app" in problems[0]
+    env.gw.bridges[OPS] = other                                        # now the ops room is on the other app and the maintainers/incidents rooms are not
+    made, problems = env.svc.desks.create(env.cfg.projects["demo"], OSCAR, [drew])
+    posted = [c[2] for c in env.gw.calls if c[0] == "POST"][-1]
+    assert made == ["demo-desk-drew"] and posted["bridge_id"] == other and posted["user_names"] == ["drew"]        # only owners of that chat app are added
 
 
 def test_desks_survive_a_restart_and_make_their_rooms_part_of_the_project(env, tmp_path):

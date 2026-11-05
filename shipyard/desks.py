@@ -66,24 +66,29 @@ class Desks:
         if not todo:
             return [], []
         gw = self.gateway()
-        ref = next(iter(sorted(project.ops_rooms)), None)
-        if ref is None:
-            raise DeskError("The project has no ops room to copy the chat app and group from.")
-        status, detail = gw.call("GET", f"/rooms/{ref}")
-        if status != 200 or not isinstance(detail, dict):
-            raise DeskError(f"Switch would not describe the ops room ({status}).")
+        details: dict[str, dict[str, Any]] = {}              # chat app (bridge) -> a project room on it, to copy the app and group from
+        for room in [*sorted(project.ops_rooms), *sorted(project.maintainer_rooms), *sorted(project.incident_rooms)]:
+            status, d = gw.call("GET", f"/rooms/{room}")
+            if status == 200 and isinstance(d, dict) and d.get("bridge_id"):
+                details.setdefault(str(d["bridge_id"]), d)
+        if not details:
+            raise DeskError("None of the project's rooms could be read from Switch, so there is nothing to copy the chat app from.")
         members = self.cfg.policy.members.get(project.name, {})
-        owners = [n for i, r in sorted(members.items()) if r is Role.OWNER and (n := username_of(i))]
         made, problems = [], []
         for ident in todo:
             user = username_of(ident)
             if ident not in members or not user:
                 problems.append(f"{ident}: not a member with a chat name")
                 continue
+            bridge = next((b for b in details if f"-{b}-" in ident), None)
+            if bridge is None:
+                problems.append(f"{user}: the project has no room on their chat app, so no desk room can be made there")
+                continue
+            owners = [n for i, r in sorted(members.items()) if r is Role.OWNER and f"-{bridge}-" in i and (n := username_of(i))]
             name = f"{project.name}-desk-{slug(user)}"
             body = {"name": name, "description": f"Personal desk for {user}: your briefing and tickets. Only you and the owners are here.",
                     "channel_type": "channel_private", "agent_names": [AGENT, "gatekeeper"], "user_names": sorted({user, *owners}),
-                    "bridge_id": detail.get("bridge_id"), "group_id": detail.get("group_id")}
+                    "bridge_id": bridge, "group_id": details[bridge].get("group_id")}
             status, room = gw.call("POST", "/rooms", {k: v for k, v in body.items() if v is not None})
             if status not in (200, 201) or not isinstance(room, dict) or "id" not in room:
                 problems.append(f"{name}: Switch answered {status} {str(room)[:100]}")
