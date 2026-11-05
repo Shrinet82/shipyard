@@ -27,10 +27,13 @@ from .health import Health
 from .members import ROLE_NAMES, MemberError, MemberStore
 from .policy import Role
 from .sbom import gate_reasons, rebase
+from .briefing import facts_for
 from .sbomstore import FILES, SbomStore
+from .tickets import KEY, TicketError
 
 log = logging.getLogger("shipyard.dashboard")
 WEB = Path(__file__).parent / "web"
+TICKET_STATUS = {"not_found": 404, "forbidden": 403, "bad_transition": 422, "unknown_member": 422, "invalid": 400}
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/app.css": ("app.css", "text/css; charset=utf-8")}
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
@@ -60,8 +63,10 @@ def _err(status: int, message: str) -> Resp:
 class Dashboard:
     def __init__(self, cfg: Config, gk: Gatekeeper, auth: DashAuth, store: SbomStore | None, health: Health, members: MemberStore,
                  access: AgentAccess | None, names: Callable[[str], str], github_repo_url: str = "https://github.com",
-                 now: Callable[[], float] = time.time):
+                 now: Callable[[], float] = time.time, flow: Any = None):
         self.cfg, self.gk, self.auth, self.store, self.health, self.members, self.access = cfg, gk, auth, store, health, members, access
+        self.flow = flow                                  # the Board, when it is on
+        self.tickets = flow.t if flow is not None else None
         self.names, self.now, self.gh_url = names, now, github_repo_url
         self._chain: tuple[float, dict[str, Any]] | None = None
         self.lock = threading.RLock()
@@ -74,6 +79,8 @@ class Dashboard:
         if m:
             return {"id": identity, "name": self.names(identity) or m["name"], "platform": m["platform"], "role": role.name.lower() if role else None}
         base = identity.split(":", 1)[0] if identity else ""
+        if role is not None:                                   # a member whose id is not in Switch's usual shape: the name we have for them
+            return {"id": identity, "name": self.names(identity) or identity, "platform": "", "role": role.name.lower()}
         return {"id": identity, "name": identity, "platform": "system" if base in SYSTEM_ACTORS or identity.startswith("agent:") else "", "role": None}
 
     def room(self, project: Project, room_id: str) -> str:
@@ -121,6 +128,8 @@ class Dashboard:
             return self._api(method, path, query, h, data)
         except MemberError as exc:
             return _err(422, str(exc))
+        except TicketError as exc:
+            return _json({"error": exc.message, "code": exc.code}, TICKET_STATUS.get(exc.code, 400))
         except AccessError as exc:
             return _err(502, str(exc))
         except Exception:
@@ -175,6 +184,17 @@ class Dashboard:
             if role is not Role.OWNER:
                 return _err(403, "only an owner can do that")
             return owner_only[route]()
+        if self.tickets is not None:
+            if route == "GET /api/tickets":
+                return self._tickets_list(ctx, query)
+            if route == "GET /api/tickets/summary":
+                return _json(self.tickets.summary(project.name, ctx["identity"]))
+            if route == "GET /api/members":
+                return self._members_list(ctx)
+            if (m := re.fullmatch(r"/api/tickets/([A-Z]{2,6}-\d{1,6})", path)) and method == "GET":
+                return _json(self._ticket_out(ctx, self.tickets.get(project.name, ctx["identity"], m[1])))
+            if (m := re.fullmatch(r"/api/tickets/([A-Z]{2,6}-\d{1,6})/move", path)) and method == "POST":
+                return self._ticket_move(ctx, m[1], data)
         if (m := re.fullmatch(r"/api/sbom/([0-9a-f]{7,40})", path)) and method == "GET":
             return self._sbom_detail(ctx, m[1])
         if (m := re.fullmatch(r"/api/sbom/([0-9a-f]{7,40})/file/([a-z]+)", path)) and method == "GET":
@@ -221,8 +241,17 @@ class Dashboard:
             "approvals": {"count": len(pend), "next_expires": min((a["expires"] for a in pend), default=None),
                           "room": self.room(p, sorted(p.ops_rooms)[0]) if p.ops_rooms else ""},
             "gate": {"blocked": len(gated), "items": [{"id": a["id"], "target": a["target"], "action": a["action"], "cves": a["args"]["gate"]} for a in gated][:5]},
-            "release": release, "recent": [self._audit_row(p, r) for r in rows],
+            "release": release, "recent": [self._audit_row(p, r) for r in rows], "board": self._board_block(c),
             "sbom_enabled": self.store is not None})
+
+    def _board_block(self, c) -> dict[str, Any] | None:
+        """The "My tickets" block of the Overview: the caller's open tickets (at most 5) and the first step the briefing rule picks."""
+        if self.tickets is None:
+            return None
+        p: Project = c["project"]
+        facts = facts_for(self.tickets, p, c["identity"], github=None, pending=self.gk.pending_list(p.name), now=self.now())
+        mine = [{k: t[k] for k in ("key", "title", "status", "priority", "due_on", "overdue")} for t in facts["tickets"][:5]]
+        return {"mine": mine, "mine_total": len(facts["tickets"]), "first_step": facts["first_step"], "summary": self.tickets.summary(p.name, c["identity"])}
 
     def _audit(self, c, q: dict[str, str]) -> Resp:
         p: Project = c["project"]
@@ -248,6 +277,58 @@ class Dashboard:
                         "report": args["sha"] if report else None})
         return _json({"approvals": out, "timeout_minutes": self.cfg.policy.approval_timeout_seconds // 60,
                       "room": self.room(p, sorted(p.ops_rooms)[0]) if p.ops_rooms else "", "now": self.now()})
+
+    # -- the Board ------------------------------------------------------------------------------------------
+
+    def _person(self, p: Project, ident: str | None) -> dict[str, Any] | None:
+        if not ident:
+            return None
+        if ident.startswith("system:"):
+            return {"id": ident, "name": ident, "platform": "system", "role": None}
+        return self.display(p, ident)
+
+    def _ticket_out(self, c, t: dict[str, Any]) -> dict[str, Any]:
+        p: Project = c["project"]
+        out = {k: t[k] for k in ("key", "title", "body", "status", "priority", "due_on", "labels", "source", "automatic", "overdue", "created_at", "updated_at", "closed_at")}
+        out["assignee"] = self._person(p, t["assignee"])
+        out["reporter"] = self._person(p, t["reporter"])
+        out["room"] = self.room(p, t["room"]) if t.get("room") else ""
+        out["can_move"] = self._moves_for(c, t)
+        for k in ("links", "events", "comments"):
+            if k in t:
+                out[k] = t[k]
+        if "events" in t:
+            out["events"] = [{**e, "actor": self._person(p, e["actor"])} for e in t["events"]]
+            out["comments"] = [{**cm, "author": self._person(p, cm["author"])} for cm in t["comments"]]
+        return out
+
+    def _moves_for(self, c, t: dict[str, Any]) -> list[str]:
+        """The statuses this person may move the ticket to, so a board can disable the rest with a reason."""
+        from .tickets import TRANSITIONS
+        role, ident = c["role"], c["identity"]
+        raw = self.tickets._ticket(c["project"].name, t["key"]) or {}
+        return [s for s in TRANSITIONS[t["status"]] if raw and self.tickets._check_move(role, ident, raw, s) is None]
+
+    def _tickets_list(self, c, q: dict[str, str]) -> Resp:
+        p: Project = c["project"]
+        who = c["identity"] if q.get("assignee", "").lower() == "me" else (q.get("assignee") or None)
+        res = self.tickets.list(p.name, c["identity"], assignee=who, status=q.get("status") or None, label=q.get("label") or None, priority=q.get("priority") or None,
+                                source=q.get("source") or None, q=q.get("q", "")[:100] or None, overdue=q.get("overdue") == "1", unassigned=q.get("unassigned") == "1",
+                                cursor=q.get("cursor") or None, limit=50)
+        return _json({"tickets": [self._ticket_out(c, t) for t in res["tickets"]], "next": res["next"]})
+
+    def _members_list(self, c) -> Resp:
+        p: Project = c["project"]
+        roles = self.members.members(p.name)
+        return _json({"members": [{**self.display(p, i), "role": r.name.lower()} for i, r in sorted(roles.items(), key=lambda kv: self.names(kv[0]) or kv[0])]})
+
+    def _ticket_move(self, c, key: str, data: dict[str, Any]) -> Resp:
+        p: Project = c["project"]
+        before = self.tickets.get(p.name, c["identity"], key)
+        t = self.tickets.move(p.name, c["identity"], key, data.get("status"))
+        if self.flow is not None and before["status"] != t["status"]:
+            self.flow._tell(t["room"], t["assignee"], c["identity"], f"{key} moved {before['status']} → {t['status']} by {self.display(p, c['identity'])['name']} on the dashboard")
+        return _json(self._ticket_out(c, self.tickets.get(p.name, c["identity"], key)))
 
     # -- SBOM --------------------------------------------------------------------------------------
 

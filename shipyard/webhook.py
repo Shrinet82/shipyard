@@ -15,7 +15,7 @@ from typing import Any, Callable
 log = logging.getLogger("shipyard.webhook")
 
 MAX_BODY = 64 * 1024
-EVENTS = {"deployment_failed", "status_changed"}   # what we alert on; the rest is ignored
+EVENTS = {"deployment_failed", "status_changed", "deployment_success"}   # alerts, and a finished deploy for the Board; the rest is ignored
 
 
 def make_handler(secret: str, on_event: Callable[[dict[str, Any]], None]):

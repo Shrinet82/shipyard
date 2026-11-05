@@ -38,6 +38,7 @@ class PR:
     updated_at: float
     requested_reviewers: tuple[str, ...] = ()
     assignees: tuple[str, ...] = ()
+    body: str = ""
 
 
 @dataclass(frozen=True)
@@ -173,7 +174,7 @@ class GitHubApp:
                   state=state, draft=bool(d.get("draft")), head_sha=d["head"]["sha"], base=d["base"]["ref"],
                   mergeable=d.get("mergeable"), created_at=_epoch(d.get("created_at")), updated_at=_epoch(d.get("updated_at")),
                   requested_reviewers=tuple(u["login"] for u in d.get("requested_reviewers", [])),
-                  assignees=tuple(u["login"] for u in d.get("assignees", [])))
+                  assignees=tuple(u["login"] for u in d.get("assignees", [])), body=(d.get("body") or "")[:8000])
 
     def pr(self, repo: str, number: int) -> PR:
         return self._pr(self._call("GET", f"/repos/{repo}/pulls/{number}"))

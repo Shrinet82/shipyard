@@ -57,11 +57,15 @@ def test_mcp_requires_the_token(server):
     assert e.value.code == 401
 
 
-def test_mcp_lists_exactly_one_tool_and_it_cannot_approve(server):
+def test_mcp_lists_request_action_and_the_board_tools_and_none_can_approve(server):
     _, port, _ = server
     tools = rpc(port, "tools/list")["result"]["tools"]
-    assert [t["name"] for t in tools] == ["request_action"]
-    assert "approve" not in json.dumps(tools[0]["inputSchema"])
+    names = [t["name"] for t in tools]
+    assert names[0] == "request_action" and set(names[1:]) == {"ticket_create", "ticket_update", "ticket_assign", "ticket_move", "ticket_comment", "ticket_link",
+                                                              "ticket_get", "ticket_list", "ticket_delete", "briefing", "team_status"}
+    assert not [n for n in names if "approve" in n or "deny" in n]
+    assert all("approve" not in json.dumps(t["inputSchema"]) for t in tools)
+    assert all("message_id" in t["inputSchema"]["required"] for t in tools)                   # every call cites the person's message
 
 
 def test_mcp_call_waits_for_a_human(server):

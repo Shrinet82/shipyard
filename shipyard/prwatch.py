@@ -30,8 +30,9 @@ STALE_REPEAT = 24 * 3600.0
 
 
 class PrWatcher:
-    def __init__(self, cfg: Config, gk: Gatekeeper, github, post: Callable[[str, str], None], now: Callable[[], float] = time.time):
+    def __init__(self, cfg: Config, gk: Gatekeeper, github, post: Callable[[str, str], None], now: Callable[[], float] = time.time, flow=None):
         self.cfg, self.gk, self.github, self.post, self.now = cfg, gk, github, post, now
+        self.flow = flow                       # the Board, when it is on: pull requests that say "Fixes SY-12" are linked to their tickets
         with gk.lock:
             gk.db.executescript(SCHEMA)
 
@@ -76,6 +77,8 @@ class PrWatcher:
                 word = "merged" if pr.state == "merged" else "closed"
                 self._announce(project, n, f"pr_{word}", f"PR #{n} {word}: {pr.title} {pr.url}")
                 self._save(repo.name, n, closed=1)
+                if self.flow is not None:
+                    self.flow.on_pr_finished(project, n, pr.state == "merged", pr.title)
 
     def _one(self, project: Project, pr: PR) -> None:
         repo = project.repo
@@ -86,6 +89,8 @@ class PrWatcher:
             st = self._state(repo.name, pr.number)
 
         checks = self.github.checks(repo.name, pr.head_sha, repo.required_checks)
+        if self.flow is not None:
+            self.flow.on_pr(project, pr, checks.ci)
         if checks.ci in ("green", "red"):
             key = f"{pr.head_sha}:{checks.ci}"
             if st["ci_key"] != key:

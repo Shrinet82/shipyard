@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .service import Service
+from .ticketflow import TOOL_NAMES, TOOLS as TICKET_TOOLS
 
 log = logging.getLogger("shipyard.mcp")
 
@@ -74,9 +75,19 @@ def make_handler(service: Service, token: str):
             if rid is None:                      # notifications
                 return self._send(202)
             if method == "tools/list":
-                return self._send(200, {"jsonrpc": "2.0", "id": rid, "result": {"tools": [TOOL]}})
+                return self._send(200, {"jsonrpc": "2.0", "id": rid, "result": {"tools": [TOOL, *TICKET_TOOLS]}})
             if method == "tools/call":
                 params = req.get("params") or {}
+                if params.get("name") in TOOL_NAMES:                       # the Board's tools: the caller is whoever wrote the cited message
+                    a = params.get("arguments") or {}
+                    try:
+                        result = service.ticket_tool(params["name"], a if isinstance(a, dict) else {}, str(a.get("message_id", "")) if isinstance(a, dict) else "",
+                                                     str(a.get("agent", "agent"))[:40] if isinstance(a, dict) else "agent")
+                    except Exception:
+                        log.exception("ticket tool failed")
+                        result = {"status": "denied", "reason": "the Gatekeeper hit an error; nothing was changed"}
+                    return self._send(200, {"jsonrpc": "2.0", "id": rid, "result": {
+                        "content": [{"type": "text", "text": json.dumps(result)}], "isError": result["status"] == "denied"}})
                 if params.get("name") != "request_action":
                     return self._send(200, {"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": "unknown tool"}})
                 a = params.get("arguments") or {}

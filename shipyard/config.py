@@ -57,6 +57,8 @@ class Project:
     room_names: dict[str, str] = field(default_factory=dict)      # room id -> label for people, e.g. "#demo-ops"
     incident_rooms: frozenset[str] = frozenset()                  # where alerts and diagnosis go; commands work here too
     exec_host: str | None = None                                  # the host (from `hosts:`) that runs the Coolify containers: `exec <app>` goes there
+    ticket_prefix: str = "SY"                                     # Board ticket keys: SY-1, SY-2, ...
+    on_call: str | None = None                                    # chat identity that automatic alert tickets are assigned to, if set
 
     @property
     def rooms(self) -> frozenset[str]:
@@ -99,6 +101,7 @@ class DashboardCfg:
     port: int = 8780
     session_hours: float = 8.0
     members_file: str = "~/shipyard-members.json"   # role overlay the dashboard edits
+    public_url: str = ""                            # where people open the dashboard (used for links in chat), e.g. http://localhost:8780
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,7 @@ class Config:
     digest: DigestCfg = DigestCfg()
     sbom: SbomCfg = SbomCfg()
     dashboard: DashboardCfg = DashboardCfg()
+    standup_at: str = ""                                   # "09:00" (IST): the daily Board standup in the maintainers rooms; empty = off
     hosts: dict[str, HostCfg] = field(default_factory=dict)
     kube: KubeCfg | None = None
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
@@ -183,6 +187,13 @@ def load_policy(path: str | Path) -> Policy:
     return _policy(yaml.safe_load(Path(path).read_text()))
 
 
+def _hhmm(value: Any) -> str:
+    text = str(value or "").strip()
+    if text and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", text):
+        raise ValueError("tickets.standup_at must look like 09:00")
+    return text
+
+
 def _rooms(value: Any) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     """`rooms: [a, b]` means ops rooms; `rooms: {ops: [...], maintainers: [...], incidents: [...]}` names them."""
     if isinstance(value, dict):
@@ -222,7 +233,8 @@ def load_config(path: str | Path) -> Config:
         projects[name] = Project(name, ops, maint, apps, repo,
                                  {str(k): str(v) for k, v in (spec.get("github_logins") or {}).items()}, k8s_apps,
                                  {str(k): str(v)[:60] for k, v in (spec.get("room_names") or {}).items()}, incidents,
-                                 str(spec["exec_host"]) if spec.get("exec_host") else None)
+                                 str(spec["exec_host"]) if spec.get("exec_host") else None,
+                                 str(spec.get("ticket_prefix", "SY")), str(spec["on_call"]) if spec.get("on_call") else None)
     rooms = [r for p in projects.values() for r in p.rooms]
     if len(rooms) != len(set(rooms)):
         raise ValueError("a room may belong to only one project")
@@ -233,6 +245,9 @@ def load_config(path: str | Path) -> Config:
     k = raw.get("kubernetes")
     kube = KubeCfg({str(r): str(f) for r, f in (k.get("kubeconfigs") or {}).items()}, str(k.get("kubectl", "kubectl")),
                    int(k.get("max_replicas", 10)), float(k.get("timeout", 30))) if k else None
+    prefixes = [p.ticket_prefix for p in projects.values()]
+    if any(not re.fullmatch(r"[A-Z]{2,6}", x) for x in prefixes) or len(prefixes) != len(set(prefixes)):
+        raise ValueError("ticket_prefix must be 2 to 6 capital letters, and different for each project")
     for p in projects.values():
         if p.exec_host and p.exec_host not in hosts:
             raise ValueError(f"exec_host {p.exec_host!r} is not one of the `hosts:`")
@@ -265,7 +280,9 @@ def load_config(path: str | Path) -> Config:
                      int(sb.get("poll_seconds", 90)), bool(sb.get("enabled", True)),
                      tuple(str(c) for c in sb.get("copyleft", ["AGPL", "GPL", "SSPL", "EUPL", "OSL", "CC-BY-SA"]))),
         dashboard=DashboardCfg(str(dash.get("bind", "127.0.0.1")), int(dash.get("port", 8780)),
-                               float(dash.get("session_hours", 8)), dash.get("members_file", "~/shipyard-members.json")),
+                               float(dash.get("session_hours", 8)), dash.get("members_file", "~/shipyard-members.json"),
+                               str(dash.get("public_url", "")).rstrip("/")),
+        standup_at=_hhmm((raw.get("tickets") or {}).get("standup_at", "")),
         hosts=hosts,
         kube=kube,
         raw=raw,

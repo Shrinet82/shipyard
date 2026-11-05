@@ -34,6 +34,8 @@ from .members import MemberError, MemberStore
 from .kube import Kube
 from .mcp_server import serve
 from .prwatch import PrWatcher
+from .ticketflow import StandupScheduler, TicketFlow
+from .tickets import Tickets
 from .sbomstore import SbomStore
 from .sbomwatch import SbomCollector
 from .service import Service
@@ -81,7 +83,7 @@ def _start_dashboard(cfg, gk, auth, collector, members, service, coolify, kube, 
     gateway = _gateway_factory(cfg)
     health = Health(cfg, coolify=coolify, kube=kube, github=github, hostshell=hostshell, gateway=gateway)
     access = AgentAccess(cfg, gateway, db, gk.lock, gk.audit) if gateway else None
-    dash = Dashboard(cfg, gk, auth, collector.store if collector else None, health, members, access, service._name)
+    dash = Dashboard(cfg, gk, auth, collector.store if collector else None, health, members, access, service._name, flow=service.flow)
     threading.Thread(target=health.loop, args=(stop,), daemon=True).start()
     serve_dashboard(dash, cfg.dashboard.bind, cfg.dashboard.port)
 
@@ -123,14 +125,19 @@ def run(config_path: str) -> None:
     auth = DashAuth(db, gk.lock, session_hours=cfg.dashboard.session_hours)
     service = Service(cfg, gk, coolify, switch.post, agent_name=creds.get("name", "gatekeeper"), github=github,
                       kube=kube, hostshell=hostshell, sbom=collector, dashauth=auth)
+    tickets = Tickets(gk, cfg.projects, lambda p: dict(cfg.policy.members.get(p, {})), service._name, post=switch.post)
+    service.flow = TicketFlow(service, tickets)
     serve(service, cfg.mcp_port, open(expand(cfg.mcp_token_file)).read().strip())
     webhook.serve(_webhook_secret(cfg), service.on_coolify_event, cfg.alerts.bind, cfg.alerts.port)
 
     stop = switch.stop
     _start_dashboard(cfg, gk, auth, collector, members, service, coolify, kube, github, hostshell, db, stop)
+    standup = StandupScheduler(service, service.flow)
+    threading.Thread(target=_loop, args=(stop, 60, standup.tick, "standup"), daemon=True).start()
+    threading.Thread(target=_loop, args=(stop, 900, service.flow.due_tick, "due dates"), daemon=True).start()
     threading.Thread(target=_loop, args=(stop, 30, service.sweep, "sweep"), daemon=True).start()
     if github:
-        watcher = PrWatcher(cfg, gk, github, switch.post)
+        watcher = PrWatcher(cfg, gk, github, switch.post, flow=service.flow)
         digest = DigestScheduler(cfg, gk, github, switch.post, service._name)
         threading.Thread(target=_loop, args=(stop, cfg.github.poll_seconds, watcher.poll_once, "PR poll"), daemon=True).start()
         threading.Thread(target=_loop, args=(stop, 30, digest.tick, "digest"), daemon=True).start()

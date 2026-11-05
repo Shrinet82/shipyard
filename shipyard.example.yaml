@@ -40,6 +40,8 @@ projects:
       ops: ["00000000-0000-0000-0000-000000000001"]          # commands and deploys
       maintainers: ["00000000-0000-0000-0000-000000000002"]  # PR alerts, the digest, SBOM reports
       incidents: ["00000000-0000-0000-0000-000000000003"]    # optional: alerts and the Ops Agent's diagnosis land here; the ops rooms hear the alert too
+    ticket_prefix: SY                         # Board ticket keys: SY-1, SY-2, ...
+    on_call: "@switch-discord-BRIDGE-owner:localhost"   # optional: who automatic alert tickets are assigned to
     exec_host: prod                           # the host (from `hosts:`) that runs the Coolify containers, for `exec <app> <command>`
     apps:                                     # app name -> Coolify application uuid
       demo-web: "aaaaaaaaaaaaaaaaaaaaaaaa"
@@ -83,6 +85,7 @@ actions:
   k8s.exec:          change      # the same list inside a pod
   repo.suggestions:  read
   repo.apply_suggestion: dangerous   # a reviewer's suggested change, applied to the PR branch; needs a second person
+  ticket.delete:     dangerous   # Board tickets: every other ticket action is checked by the role matrix in shipyard/tickets.py
   secrets.read:      dangerous
   coolify.stop_prod: dangerous
   coolify.delete:    dangerous
@@ -95,6 +98,7 @@ min_role:
   ops.shell: owner
   coolify.exec: maintainer
   k8s.exec: maintainer
+  ticket.delete: owner
 
 # Change-tier actions that still need an approval (second person or owner).
 approval_overrides:
@@ -110,8 +114,13 @@ sbom:
   poll_seconds: 90
   copyleft: [AGPL, GPL, SSPL, EUPL, OSL, CC-BY-SA]   # licence families flagged in reports (report only: a licence never blocks a deploy)
 
+# The Board (tickets): a daily standup in the maintainers rooms, IST. Leave empty to turn the standup off.
+tickets:
+  standup_at: "09:00"
+
 # The dashboard listens on loopback only; reach it with: ssh -L 8780:localhost:8780 <vm>
 dashboard:
   port: 8780
   session_hours: 8
+  public_url: http://localhost:8780           # used for the links the Board posts in chat
   members_file: ~/shipyard-members.json       # roles edited in the dashboard are kept here and win over `members:` above

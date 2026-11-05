@@ -8,9 +8,9 @@ ACTIONS = {
     "coolify.deploy": "change", "coolify.restart": "change", "coolify.rollback": "change",
     "coolify.exec": "change", "k8s.exec": "change",         # allowlisted read-only diagnostics inside a container or pod
     "k8s.restart": "change", "k8s.rollback": "change", "k8s.scale": "change",
-    "repo.merge": "dangerous", "repo.apply_suggestion": "dangerous", "ops.shell": "dangerous", "secrets.read": "dangerous",
+    "repo.merge": "dangerous", "repo.apply_suggestion": "dangerous", "ticket.delete": "dangerous", "ops.shell": "dangerous", "secrets.read": "dangerous",
     "coolify.stop_prod": "dangerous", "coolify.delete": "dangerous", "deploy.override_cve_gate": "dangerous",
     "ops.firewall": "blocked", "repo.force_push_main": "blocked",
 }
-MIN_ROLE = {"ops.shell": "owner", "coolify.exec": "maintainer", "k8s.exec": "maintainer"}
+MIN_ROLE = {"ops.shell": "owner", "coolify.exec": "maintainer", "k8s.exec": "maintainer", "ticket.delete": "owner"}
 APPROVAL_OVERRIDES = {"coolify.rollback": True, "k8s.rollback": True}

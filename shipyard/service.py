@@ -63,6 +63,7 @@ class Service:
         self.cfg, self.gk, self.coolify, self.post, self.github = cfg, gk, coolify, post, github
         self.kube, self.hostshell = kube, hostshell
         self.dashauth = dashauth                # DashAuth, when the dashboard is on
+        self.flow: Any = None                   # the Board (TicketFlow), when it is on
         self.sbom = sbom                       # an SbomCollector, or None when the SBOM gate is not configured
         self.agent_name = agent_name
         self.now = now
@@ -102,6 +103,8 @@ class Service:
             return
         room, p = ev["room_id"], ev["payload"]
         self._remember(room, p)
+        if self.flow is not None and p.get("sender_name") in self.cfg.known_agents:
+            self.flow.on_agent_message(room, p.get("sender_name"), p.get("body") or "")      # an alert's diagnosis becomes its ticket's body
         if p.get("sender_name") == self.agent_name:
             return
         project = self.cfg.project_for_room(room)
@@ -292,9 +295,11 @@ class Service:
         return sorted({f["id"] for f in report["blocking"]})[:10]
 
     def _gate_note(self, project: Project, actor: str, sender_name: str, action: str, target: str, reasons: list[str],
-                   ids: list[str], commit: str) -> None:
+                   ids: list[str], commit: str, room: str = "", report: dict[str, Any] | None = None, label: str = "") -> None:
         self.gk.audit.write(project=project.name, actor=actor, event="gate_blocked", action=action, target=target,
                             reason=reasons[0][:300], cves=ids, commit=commit[:12], name=sender_name)
+        if self.flow is not None and report and report.get("blocking") and project.repo and project.repo.app:
+            self.flow.on_gate_block(project, room, project.repo.app, label or target, commit, report)       # one urgent ticket per new critical CVE
 
     def _dashboard_login(self, project: Project, sender: str, cmd: Command) -> str:
         """The person who typed this is who Switch says they are: bind the dashboard's waiting code to them."""
@@ -548,7 +553,7 @@ class Service:
                                   name=self._name(sender))
             if gated:
                 args["gate"] = self._gate_ids(report)
-                self._gate_note(project, sender, self._name(sender), "repo.merge", target, gated, args["gate"], pr.head_sha)
+                self._gate_note(project, sender, self._name(sender), "repo.merge", target, gated, args["gate"], pr.head_sha, room, report, f"PR #{pr.number}")
         out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action="repo.merge", target=target,
                                      args=args, room_id=room, name=self._name(sender), force_approval=bool(gated))
         if out.status == "denied":
@@ -587,6 +592,8 @@ class Service:
         self.gk.audit.write(project=project.name, actor=actor, event="executed", action="repo.merge", target=str(number),
                             result=f"merged {merged[:7]}", name=who, approved_by=approved_by)
         by = f", approved by {self._name(approved_by)}" if approved_by else ""
+        if self.flow is not None:
+            self.flow.on_merge(project, number, pr.author, pr.title)          # its tickets move at once, not at the next poll
         text = f"Done: merged PR #{number} ({repo.merge_method}, {merged[:7]}) for {who}{by}."
         if repo.app:
             try:
@@ -628,7 +635,7 @@ class Service:
             if d.verdict is Verdict.DENY:                      # the role is checked first, so others learn nothing about the SBOM
                 return self._deny(project, sender, action, target, d.reason, name=self._name(sender))
             try:
-                args, gated = self._deploy_args(project, sender, action, target, args)
+                args, gated = self._deploy_args(project, sender, action, target, args, room)
             except GitHubError as exc:
                 return self._deny(project, sender, action, target, f"the SBOM gate could not be checked ({exc})", name=self._name(sender))
         out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action=action, target=target,
@@ -639,7 +646,7 @@ class Service:
             return self._prompt(out.approval_id, action, target, args, self._name(sender), gate=gated)
         return self._run(project, sender, action, target, args)
 
-    def _deploy_args(self, project: Project, actor: str, action: str, target: str, args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    def _deploy_args(self, project: Project, actor: str, action: str, target: str, args: dict[str, Any], room: str = "") -> tuple[dict[str, Any], list[str]]:
         """Pin a deploy of the repository app to the branch head, and say what the SBOM gate thinks of that commit."""
         repo = project.repo
         head = self.github.branch_head(repo.name, repo.branch)
@@ -647,7 +654,7 @@ class Service:
         args = {**args, "sha": head}
         if reasons:
             args["gate"] = self._gate_ids(report)
-            self._gate_note(project, actor, self._name(actor), action, target, reasons, args["gate"], head)
+            self._gate_note(project, actor, self._name(actor), action, target, reasons, args["gate"], head, room, report, repo.branch)
         return args, reasons
 
     def _recheck_deploy(self, project: Project, r: dict[str, Any], approver: str) -> str | None:
@@ -738,6 +745,8 @@ class Service:
         if out.status != "approved":
             return f"Denied: {out.reason}."
         r = out.request or {}
+        if r["action"] == "ticket.delete" and self.flow is not None:
+            return self.flow.approved_delete(project, r["requester"], r["target"])
         if r["action"] == "repo.apply_suggestion":
             return self._run_apply_suggestions(project, r["requester"], r["args"], sender)
         if r["action"] == "repo.merge":
@@ -880,7 +889,7 @@ class Service:
         gated: list[str] = []
         if action == "coolify.deploy" and self._gated_app(project, target):
             try:
-                args, gated = self._deploy_args(project, requester, action, target, args)
+                args, gated = self._deploy_args(project, requester, action, target, args, room)
             except GitHubError as exc:
                 return {"status": "denied", "reason": f"the SBOM gate could not be checked ({exc})"}
         out = self.gk.request_action(project=project.name, identity=requester, is_human=True, action=action,
@@ -896,6 +905,13 @@ class Service:
         result = self._run(project, requester, action, target, args)
         return {"status": "done", "result": result}
 
+    # -- the Board: the agent's ticket tools ------------------------------------
+
+    def ticket_tool(self, name: str, args: dict[str, Any], message_id: str, agent: str = "agent") -> dict[str, Any]:
+        if self.flow is None:
+            return {"status": "denied", "code": "invalid", "reason": "the Board is not turned on", "reply": "The Board is not turned on."}
+        return self.flow.tool(name, args, message_id, agent)
+
     # -- alerts from Coolify --------------------------------------------------
 
     def on_coolify_event(self, payload: dict[str, Any]) -> None:
@@ -906,6 +922,10 @@ class Service:
         if hit is None:
             return
         project, app = hit
+        if event == "deployment_success":                      # not an alert: a finished deploy closes the tickets whose fix it carries
+            if self.flow is not None and self.gk.first_time(f"coolify:{event}:{payload.get('deployment_uuid') or uuid}"):
+                self.flow.on_deploy_succeeded(project, app, str(payload.get("deployment_uuid") or ""))
+            return
         key = f"coolify:{event}:{payload.get('deployment_uuid') or uuid}"
         if event == "status_changed":
             key += f":{int(self.now() // 600)}"         # at most one stop alert per 10 minutes
@@ -933,6 +953,8 @@ class Service:
         if not project.incident_rooms:
             for room in sorted(project.ops_rooms):
                 self.post(room, text)
+            if self.flow is not None:
+                self.flow.on_alert(project, app, event, payload, lines, sorted(project.ops_rooms), sorted(project.ops_rooms))
             return
         # An incidents room exists: it gets the full alert and the Ops Agent is asked there. The ops rooms get the same evidence and a
         # pointer, without a second request to the agent, so it diagnoses once.
@@ -942,6 +964,8 @@ class Service:
             self.post(room, text)
         for room in sorted(project.ops_rooms):
             self.post(room, pointer)
+        if self.flow is not None:
+            self.flow.on_alert(project, app, event, payload, lines, sorted(project.alert_rooms), sorted(project.incident_rooms))
 
     # -- housekeeping ---------------------------------------------------------
 
