@@ -135,11 +135,15 @@ def may_approve(
     approver: str,
     approver_is_human: bool,
     allow_requester: bool = False,
+    second_person: bool = False,
 ) -> bool:
     """The owner may approve anything (including their own request); a maintainer
     may approve someone else's request. `allow_requester` lets the person an agent
-    acted for confirm it themselves (their role was already checked at request time)."""
+    acted for confirm it themselves (their role was already checked at request time).
+    `second_person` is for actions that always need someone other than the requester, owner or not."""
     if not approver_is_human:
+        return False
+    if second_person and approver == requester:
         return False
     if allow_requester and approver == requester:
         return True

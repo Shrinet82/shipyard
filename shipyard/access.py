@@ -18,6 +18,8 @@ import urllib.request
 from typing import Any, Callable
 
 from .config import Config, Project
+from .desks import AGENT as DESK_AGENT
+from .policy import Role
 
 SCHEMA = "CREATE TABLE IF NOT EXISTS agent_sync (agent TEXT PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL);"
 _SENDER = re.compile(r"^@switch-(?P<platform>[a-z]+)-(?P<bridge>[0-9a-f-]{36})-(?P<name>.+):[^:]+$")
@@ -110,8 +112,15 @@ class AgentAccess:
         for name in self.cfg.managed_agents:
             if name not in world["agents"]:
                 continue
+            desk_rules = []
+            if name == DESK_AGENT:                      # a personal desk admits only its member and the owners
+                owner_ids = sorted({resolved[m] for m, r in members.items() if r is Role.OWNER and resolved.get(m)})
+                for ident, room in sorted(self.cfg.desks.get(project.name, {}).items()):
+                    if resolved.get(ident):
+                        desk_rules.append({"rooms": [room], "users": sorted({resolved[ident], *owner_ids}), "agents": [], "owner": False, "platform": False})
             policies[name] = {"rules": [
                 {"rooms": rooms, "users": user_ids, "agents": [], "owner": False, "platform": False},
+                *desk_rules,
                 *([{"rooms": rooms, "users": [], "agents": allow, "owner": False, "platform": False}] if allow else []),
                 {"rooms": "*", "users": [], "agents": [], "owner": True, "platform": False}]}
         return {"policies": policies, "resolved": resolved, "unresolved": sorted(m for m, v in resolved.items() if not v)}

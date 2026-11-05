@@ -1,4 +1,5 @@
 import json
+import time
 import socket
 import sqlite3
 import textwrap
@@ -83,6 +84,10 @@ def post(port, path, body=b"{}", headers=None):
 def test_webhook_accepts_a_valid_event(hook):
     got, port = hook
     assert post(port, f"/hooks/coolify/{SECRET}", json.dumps({"event": "deployment_failed", "application_uuid": "u"}).encode()) == 200
+    for _ in range(50):                                   # the handler replies first, then hands the event on
+        if got:
+            break
+        time.sleep(0.02)
     assert got and got[0]["application_uuid"] == "u"
 
 

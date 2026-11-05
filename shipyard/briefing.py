@@ -12,6 +12,7 @@ from typing import Any
 
 from .evidence import defuse, redact
 from .github import GitHubError
+from .gatekeeper import SECOND_PERSON
 from .policy import Role, may_approve
 from .tickets import IST, PRIORITY_RANK, Tickets, _now_iso
 
@@ -88,7 +89,8 @@ def facts_for(tix: Tickets, project, who: str, *, github=None, pending=None, now
     approvals = []
     for a in (pending or []):
         if a["requester"] != who and may_approve(tix.gk.policy, project=project.name, requester=a["requester"], approver=who, approver_is_human=True,
-                                                allow_requester=a["kind"] == "agent_proposal"):
+                                                allow_requester=a["kind"] == "agent_proposal" and a["action"] not in SECOND_PERSON,
+                                                second_person=a["action"] in SECOND_PERSON):
             approvals.append({"id": a["id"], "action": a["action"], "target": a["target"]})
     ops = [{"key": t["key"], "title": t["title"], "source": t["source"]} for t in own
            if t["source"] in ("alert", "deploy_failed", "sbom_gate", "incident") and t["created_at"] > _now_iso(now - 24 * 3600)]

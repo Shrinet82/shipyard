@@ -6,8 +6,9 @@ never repeats an announcement.
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from .config import Config, Project
 from .gatekeeper import Gatekeeper
@@ -32,6 +33,7 @@ STALE_REPEAT = 24 * 3600.0
 class PrWatcher:
     def __init__(self, cfg: Config, gk: Gatekeeper, github, post: Callable[[str, str], None], now: Callable[[], float] = time.time, flow=None):
         self.cfg, self.gk, self.github, self.post, self.now = cfg, gk, github, post, now
+        self._hook_lock = threading.Lock()
         self.flow = flow                       # the Board, when it is on: pull requests that say "Fixes SY-12" are linked to their tickets
         with gk.lock:
             gk.db.executescript(SCHEMA)
@@ -52,6 +54,19 @@ class PrWatcher:
         self.gk.audit.write(project=project.name, actor="github", event="pr_alert", action=kind, target=str(pr_number))
         for room in sorted(project.maintainer_rooms or project.ops_rooms):
             self.post(room, text)
+
+    def on_hook(self, event: str, payload: dict[str, Any]) -> None:
+        """A GitHub webhook said something changed. The payload is only a nudge: it names the repository, and the state is read again from GitHub's
+        own API (authenticated), so a forged or odd payload cannot make up a pull request, a merge or a CI result."""
+        repo = str((payload.get("repository") or {}).get("full_name") or "")
+        project = next((p for p in self.cfg.projects.values() if p.repo and p.repo.name.lower() == repo.lower()), None)
+        if project is None:
+            return
+        with self._hook_lock:                                    # one refresh at a time; a burst of events becomes a few refreshes
+            try:
+                self._poll_project(project)
+            except GitHubError as exc:
+                log.warning("refresh of %s after a webhook failed: %s", repo, exc)
 
     def poll_once(self) -> None:
         for project in self.cfg.projects.values():
@@ -78,7 +93,7 @@ class PrWatcher:
                 self._announce(project, n, f"pr_{word}", f"PR #{n} {word}: {pr.title} {pr.url}")
                 self._save(repo.name, n, closed=1)
                 if self.flow is not None:
-                    self.flow.on_pr_finished(project, n, pr.state == "merged", pr.title)
+                    self.flow.on_pr_finished(project, n, pr.state == "merged", pr.title, merge_sha=pr.merge_sha)
 
     def _one(self, project: Project, pr: PR) -> None:
         repo = project.repo

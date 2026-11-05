@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import re
 import subprocess
 import time
 import urllib.error
@@ -39,6 +40,7 @@ class PR:
     requested_reviewers: tuple[str, ...] = ()
     assignees: tuple[str, ...] = ()
     body: str = ""
+    merge_sha: str = ""         # the commit a merged PR left on its base branch (the squash or merge commit)
 
 
 @dataclass(frozen=True)
@@ -174,7 +176,8 @@ class GitHubApp:
                   state=state, draft=bool(d.get("draft")), head_sha=d["head"]["sha"], base=d["base"]["ref"],
                   mergeable=d.get("mergeable"), created_at=_epoch(d.get("created_at")), updated_at=_epoch(d.get("updated_at")),
                   requested_reviewers=tuple(u["login"] for u in d.get("requested_reviewers", [])),
-                  assignees=tuple(u["login"] for u in d.get("assignees", [])), body=(d.get("body") or "")[:8000])
+                  assignees=tuple(u["login"] for u in d.get("assignees", [])), body=(d.get("body") or "")[:8000],
+                  merge_sha=(d.get("merge_commit_sha") or "") if d.get("merged_at") else "")
 
     def pr(self, repo: str, number: int) -> PR:
         return self._pr(self._call("GET", f"/repos/{repo}/pulls/{number}"))
@@ -183,6 +186,13 @@ class GitHubApp:
         """Open PRs with their conflict state (the list endpoint omits it, so each is fetched)."""
         rows = self._call("GET", f"/repos/{repo}/pulls?state=open&per_page=50")
         return [self.pr(repo, r["number"]) for r in rows]
+
+    def compare(self, repo: str, base: str, head: str) -> str:
+        """ahead | behind | identical | diverged: where `head` stands against `base`. `base` is in `head`'s history when this is ahead or identical."""
+        for ref in (base, head):
+            if not re.fullmatch(r"[0-9a-fA-F]{7,40}", ref or ""):
+                raise GitHubError("a commit sha is expected")
+        return str(self._call("GET", f"/repos/{repo}/compare/{base}...{head}?per_page=1").get("status", ""))
 
     def checks(self, repo: str, sha: str, required: tuple[str, ...]) -> Checks:
         data = self._call("GET", f"/repos/{repo}/commits/{sha}/check-runs?per_page=100")

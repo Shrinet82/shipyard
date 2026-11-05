@@ -32,6 +32,11 @@ class BoardGitHub(FakeGitHub):
     def __init__(self):
         super().__init__()
         self.reviewers = {}
+        self.compared = "ahead"
+
+    def compare(self, repo, base, head):
+        self._guard()
+        return self.compared
 
     def list_open_prs(self, repo):
         self._guard()
@@ -62,6 +67,7 @@ def env(tmp_path):
     gk = Gatekeeper(cfg.policy, sqlite3.connect(":memory:", check_same_thread=False), clock)
     gh, posts = BoardGitHub(), []
     svc = Service(cfg, gk, type("C", (FakeCoolify,), {"deployment_logs": lambda s, u: ["Step 4/6 : COPY requirements.txt .", "ERROR: not found"],
+                                                       "deployment_commit": lambda s, u: "" if u == "dep-nocommit" else "d" * 40,
                                                        "container_logs": lambda s, u, n=100: ["panic: boom"]})(), lambda r, t: posts.append((r, t)), now=clock, github=gh)
     svc.names.update({OWNER: "olga", MAINTAINER: "mia", DEP: "dan", VIEWER: "vera"})
     tix = Tickets(gk, cfg.projects, lambda p: dict(cfg.policy.members.get(p, {})), svc._name, clock)
@@ -188,7 +194,10 @@ def test_delete_always_waits_for_a_person_and_only_an_owner_may_ask(env):
     r = env.call(OWNER, "ticket_delete", key="SY-1")
     assert r["status"] == "awaiting_approval" and re.search(r"[0-9a-f]{8}", r["approval_id"]) and env.t.get("demo", OWNER, "SY-1")
     assert "Approval needed" in env.last() and "delete SY-1" in env.last() and "repo-agent proposes" in env.last()
-    env.say(OWNER, f"approve {r['approval_id']}")
+    assert "second person" in env.last()
+    env.say(OWNER, f"approve {r['approval_id']}")                                                       # the spec: a second person, even for an owner
+    assert "Denied: approver not authorized" in env.last() and env.t.get("demo", OWNER, "SY-1")
+    env.say(MAINTAINER, f"approve {r['approval_id']}")
     assert "Done: SY-1 deleted" in env.last()
     assert env.call(OWNER, "ticket_get", key="SY-1")["code"] == "not_found"
     assert env.call(OWNER, "ticket_create", title="next")["ticket"]["key"] == "SY-2"                 # never reused
@@ -343,20 +352,42 @@ def test_ci_changes_update_the_link_quietly(env):
     assert g["links"][0]["meta"]["ci"] == "green" and len(g["events"]) == events
 
 
-def test_merge_keeps_review_then_a_successful_deploy_links_it_and_moves_to_done(env):
+def _merged(env, number=26):
+    from dataclasses import replace
     env.call(OWNER, "ticket_create", title="x")
-    env.gh.set(mkpr(26, "Fixes SY-1", author="depgh"), "green")
+    env.gh.set(mkpr(number, "Fixes SY-1", author="depgh"), "green")
     w = watcher(env)
     w.poll_once()
-    env.gh.set(mkpr(26, "Fixes SY-1", state="merged", author="depgh"), "green")
+    env.gh.set(replace(mkpr(number, "Fixes SY-1", state="merged", author="depgh"), merge_sha="m" * 40), "green")
     w.poll_once()
     g = env.t.get("demo", OWNER, "SY-1")
-    assert g["status"] == "review" and any(e["to"] == "merged in PR #26" for e in g["events"])
+    assert g["status"] == "review" and any(e["to"] == f"merged in PR #{number}" for e in g["events"])
+
+
+def test_merge_keeps_review_then_a_deploy_that_contains_the_merge_commit_links_it_and_moves_to_done(env):
+    _merged(env)
     env.svc.on_coolify_event({"event": "deployment_success", "application_uuid": "web-uuid", "deployment_uuid": "dep-1"})
     g = env.t.get("demo", OWNER, "SY-1")
     assert g["status"] == "done" and ("deploy", "dep-1") in [(l["kind"], l["ref"]) for l in g["links"]] and any("shipped in a successful deploy" in x for x in env.in_room(MAINT))
     env.svc.on_coolify_event({"event": "deployment_success", "application_uuid": "web-uuid", "deployment_uuid": "dep-1"})          # a replay changes nothing
     assert len([e for e in env.t.get("demo", OWNER, "SY-1")["events"] if e["type"] == "closed"]) == 1
+
+
+def test_a_deploy_of_an_older_commit_leaves_the_ticket_in_review(env):
+    _merged(env)
+    env.gh.compared = "behind"                                                           # the deployed commit does not include the merge
+    env.svc.on_coolify_event({"event": "deployment_success", "application_uuid": "web-uuid", "deployment_uuid": "dep-old"})
+    assert env.t.get("demo", OWNER, "SY-1")["status"] == "review"
+    env.gh.compared = "ahead"
+    env.svc.on_coolify_event({"event": "deployment_success", "application_uuid": "web-uuid", "deployment_uuid": "dep-new"})
+    assert env.t.get("demo", OWNER, "SY-1")["status"] == "done"
+
+
+def test_a_deploy_whose_commit_cannot_be_read_moves_nothing_and_says_so(env):
+    _merged(env)
+    env.svc.on_coolify_event({"event": "deployment_success", "application_uuid": "web-uuid", "deployment_uuid": "dep-nocommit"})
+    g = env.t.get("demo", OWNER, "SY-1")
+    assert g["status"] == "review" and any("commit not checked" in str(e["to"]) for e in g["events"])
 
 
 def test_with_no_deploy_target_a_merge_is_done(env):
@@ -437,7 +468,7 @@ def test_the_standup_posts_once_a_day_after_the_time_and_not_before(env):
     assert sched.tick() == 0
     env.clock.t = dt.datetime(2026, 11, 6, 9, 5, tzinfo=ist).timestamp()
     assert sched.tick() == 1 and sched.tick() == 0
-    text = env.last(MAINT)
+    text = next(t for t in env.in_room(MAINT) if t.startswith("Standup for demo"))
     assert text.startswith("Standup for demo (2026-11-06)") and "dan: SY-1" in text
     env.clock.t += 86400
     assert sched.tick() == 1

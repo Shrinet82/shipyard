@@ -610,7 +610,7 @@ class Tickets:
         for r in rows:
             meta = json.loads(r.pop("meta"))
             if meta.get("state") == "merged" and meta.get("closes"):
-                out.append(r)
+                out.append({**r, "merge_sha": meta.get("merge_sha", "")})
         return out
 
     def by_link(self, kind: str, ref: str, project: str) -> list[dict[str, Any]]:

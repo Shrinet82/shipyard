@@ -17,6 +17,8 @@ from typing import Any, Callable, Mapping
 from .audit import AuditLog
 from .policy import Decision, Policy, Role, Tier, Verdict, evaluate, may_approve
 
+SECOND_PERSON = frozenset({"ticket.delete"})              # always approved by someone other than the person who asked
+
 APPROVALS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS approvals (
     id TEXT PRIMARY KEY,
@@ -159,7 +161,8 @@ class Gatekeeper:
                              approval_id=approval_id, reason="does not match the original request")
             return Outcome("denied", "approval does not match the original request")
         if not may_approve(self.policy, project=project, requester=r["requester"], approver=approver,
-                           approver_is_human=approver_is_human, allow_requester=r["kind"] == "agent_proposal"):
+                           approver_is_human=approver_is_human, allow_requester=r["kind"] == "agent_proposal" and r["action"] not in SECOND_PERSON,
+                           second_person=r["action"] in SECOND_PERSON):
             self.audit.write(project=project, actor=approver, event="approval_rejected", action=r["action"],
                              target=r["target"], approval_id=approval_id, reason="approver not authorized")
             return Outcome("denied", "approver not authorized")

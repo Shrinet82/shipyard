@@ -59,6 +59,7 @@ class Project:
     exec_host: str | None = None                                  # the host (from `hosts:`) that runs the Coolify containers: `exec <app>` goes there
     ticket_prefix: str = "SY"                                     # Board ticket keys: SY-1, SY-2, ...
     on_call: str | None = None                                    # chat identity that automatic alert tickets are assigned to, if set
+    servers: tuple[str, ...] = ()                                 # Coolify server uuids this project owns (for disk alerts); with one project, not needed
 
     @property
     def rooms(self) -> frozenset[str]:
@@ -84,6 +85,7 @@ class GithubCfg:
     private_key_file: str = "~/shipyard-github.pem"
     poll_seconds: int = 60
     stale_hours: float = 48.0
+    webhook_secret_file: str = "~/shipyard-github-webhook.secret"   # GitHub's webhook secret; with the file present the Gatekeeper accepts GitHub's webhooks
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,8 @@ class AlertCfg:
     port: int = 8766
     evidence_lines: int = 40
     agent: str = "ops-agent"           # who is asked to diagnose
+    restart_limit: int = 5             # a Kubernetes pod restarted this many times is an alert
+    cluster_poll_seconds: int = 60     # how often the cluster is looked at; 0 turns the Kubernetes alerts off
 
 
 @dataclass(frozen=True)
@@ -144,9 +148,15 @@ class Config:
     hosts: dict[str, HostCfg] = field(default_factory=dict)
     kube: KubeCfg | None = None
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
+    desks: dict[str, dict[str, str]] = field(default_factory=dict, compare=False)     # project -> member identity -> personal desk room (filled at start-up)
+    desks_file: str = "~/shipyard-desks.json"
 
     def project_for_room(self, room_id: str) -> Project | None:
-        return next((p for p in self.projects.values() if room_id in p.rooms), None)
+        return next((p for p in self.projects.values() if room_id in p.rooms or room_id in self.desks.get(p.name, {}).values()), None)
+
+    def desk_owner(self, room_id: str) -> str | None:
+        """The member a personal desk room belongs to, or None when the room is not a desk."""
+        return next((i for rooms in self.desks.values() for i, r in rooms.items() if r == room_id), None)
 
     def project_for_app_uuid(self, uuid: str) -> tuple[Project, str] | None:
         for p in self.projects.values():
@@ -234,7 +244,8 @@ def load_config(path: str | Path) -> Config:
                                  {str(k): str(v) for k, v in (spec.get("github_logins") or {}).items()}, k8s_apps,
                                  {str(k): str(v)[:60] for k, v in (spec.get("room_names") or {}).items()}, incidents,
                                  str(spec["exec_host"]) if spec.get("exec_host") else None,
-                                 str(spec.get("ticket_prefix", "SY")), str(spec["on_call"]) if spec.get("on_call") else None)
+                                 str(spec.get("ticket_prefix", "SY")), str(spec["on_call"]) if spec.get("on_call") else None,
+                                 tuple(str(x) for x in spec.get("servers") or []))
     rooms = [r for p in projects.values() for r in p.rooms]
     if len(rooms) != len(set(rooms)):
         raise ValueError("a room may belong to only one project")
@@ -272,9 +283,11 @@ def load_config(path: str | Path) -> Config:
         known_agents=frozenset(gk.get("known_agents", ["ops-agent", "repo-agent"])),
         github=GithubCfg(str(gh.get("app_id", "")), str(gh.get("installation_id", "")),
                          gh.get("private_key_file", "~/shipyard-github.pem"),
-                         int(gh.get("poll_seconds", 60)), float(gh.get("stale_hours", 48))),
+                         int(gh.get("poll_seconds", 60)), float(gh.get("stale_hours", 48)),
+                        str(gh.get("webhook_secret_file", "~/shipyard-github-webhook.secret"))),
         alerts=AlertCfg(al.get("secret_file", "~/gatekeeper-webhook.secret"), al.get("bind", "0.0.0.0"),
-                        int(al.get("port", 8766)), int(al.get("evidence_lines", 40)), al.get("agent", "ops-agent")),
+                        int(al.get("port", 8766)), int(al.get("evidence_lines", 40)), al.get("agent", "ops-agent"),
+                        int(al.get("restart_limit", 5)), int(al.get("cluster_poll_seconds", 60))),
         digest=DigestCfg(int(dg.get("hour", 9)), int(dg.get("minute", 0)), dg.get("timezone", "Asia/Kolkata")),
         sbom=SbomCfg(str(sb.get("workflow", ".github/workflows/ci.yml")), sb.get("data_dir", "~/shipyard-sbom"),
                      int(sb.get("poll_seconds", 90)), bool(sb.get("enabled", True)),
@@ -286,6 +299,7 @@ def load_config(path: str | Path) -> Config:
         hosts=hosts,
         kube=kube,
         raw=raw,
+        desks_file=str(raw.get("desks_file", "~/shipyard-desks.json")),
     )
 
 

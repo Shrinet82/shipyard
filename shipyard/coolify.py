@@ -6,6 +6,7 @@ CoolifyError on any failure, so callers fail closed.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -105,6 +106,17 @@ class CoolifyMcp:
         except ValueError:
             return [str(logs)]
         return [e.get("output", "") for e in entries if isinstance(e, dict) and not e.get("hidden")]
+
+    def deployment_commit(self, deployment_uuid: str) -> str:
+        """The git commit one deployment built, or "" when Coolify has only recorded "HEAD" for it."""
+        req = urllib.request.Request(f"{self.base}/api/v1/deployments/{deployment_uuid}", headers={"Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                data = json.loads(r.read())
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise CoolifyError(f"could not read the deployment: {e}") from e
+        sha = str((data or {}).get("commit") or "")
+        return sha if re.fullmatch(r"[0-9a-fA-F]{7,40}", sha) else ""
 
     def deployment_history(self, uuid: str, limit: int = 8) -> list[str]:
         req = urllib.request.Request(f"{self.base}/api/v1/deployments/applications/{uuid}",

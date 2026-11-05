@@ -287,7 +287,13 @@ class TicketFlow:
             self.limit_posted[project.name] = self.svc.now()
             self._announce(rooms, "Too many alerts at once: I have opened 10 tickets this hour and will not open more until the next hour. The alerts above still stand.")
 
-    def on_alert(self, project, app: str, event: str, payload: dict[str, Any], lines: list[str], rooms: list[str], ask_rooms: list[str]) -> str | None:
+    # kind -> (what it is called in the ticket title, label). The dedupe key is alert:<target>:<kind> while a ticket with it is open.
+    ALERT_KINDS = {"application_stopped": ("application stopped", "ops"), "container_crashed": ("container crashed", "ops"),
+                   "restart_limit": ("restart limit reached", "ops"), "disk_over_threshold": ("disk over threshold", "ops")}
+
+    def on_alert(self, project, app: str, event: str, payload: dict[str, Any], lines: list[str], rooms: list[str], ask_rooms: list[str],
+                 incident: str | None = None) -> str | None:
+        event = {"status_changed": "application_stopped"}.get(event, event)
         if event == "deployment_failed":
             dep = str(payload.get("deployment_uuid") or "")
             merged = self.last_merge.get(project.name)
@@ -296,13 +302,16 @@ class TicketFlow:
                                      title=f"Fix failed deploy: {app} {dep[:8]}".strip(), body="Waiting for the Ops Agent's diagnosis.", priority="high",
                                      labels=["deploy"], assignee=assignee, room=rooms[0] if rooms else "", again="the deploy failed again")
         else:
-            t, outcome = self.t.auto(project.name, source="alert", source_ref=f"alert:{app}:application_stopped", title=f"Investigate: application stopped on {app}",
-                                     body="Waiting for the Ops Agent's diagnosis.", priority="high", labels=["ops"], assignee=project.on_call, room=rooms[0] if rooms else "")
+            what, label = self.ALERT_KINDS.get(event, (event.replace("_", " "), "ops"))
+            t, outcome = self.t.auto(project.name, source="alert", source_ref=f"alert:{app}:{event}", title=f"Investigate: {what} on {app}",
+                                     body="Waiting for the Ops Agent's diagnosis.", priority="high", labels=[label], assignee=project.on_call, room=rooms[0] if rooms else "")
         if outcome == "limited":
             self._limit_notice(project, rooms)
             return None
         if outcome == "unknown_project" or t is None:
             return None
+        if incident and outcome in ("created", "repeated"):
+            self.t.link(project.name, "system:alert", t["key"], "incident", incident, system=True)
         if outcome == "created":
             evidence = "Alert evidence (last lines, secrets removed):\n" + "\n".join(lines[-12:])
             self.t.comment(project.name, "system:alert", t["key"], evidence[:1900], author=f"system:{t['source']}")
@@ -348,6 +357,22 @@ class TicketFlow:
             self.svc.post(room, "Tickets for this block: " + ", ".join(made) + self._link(""))
         return made
 
+    def on_incident_closed(self, project, inc: dict[str, Any], items: list[str], actor: str) -> str | None:
+        """The follow-ups of a closed incident: one ticket whose body is the action items as a checklist. None when no items were named."""
+        if not items:
+            return None
+        rooms = sorted(project.incident_rooms or project.ops_rooms)
+        t, outcome = self.t.auto(project.name, source="incident", source_ref=f"incident:{inc['key']}", title=f"Follow-ups from incident {inc['key']}",
+                                 body="\n".join(f"- [ ] {i}" for i in items), priority="medium", labels=["incident"], room=rooms[0] if rooms else "",
+                                 again="the incident was closed again")
+        if outcome == "limited":
+            self._limit_notice(project, rooms)
+            return None
+        if t is None:
+            return None
+        self.t.link(project.name, "system:incident", t["key"], "incident", inc["key"], system=True)
+        return t["key"]
+
     # -- automation: GitHub -------------------------------------------------------------------------------------------------------
 
     def _reverse_logins(self, project) -> dict[str, str]:
@@ -374,14 +399,14 @@ class TicketFlow:
                 if self.t.system_move(project.name, key, "review", "system:github"):
                     self._notify_maintainers(project, f"{key} moved to review: PR #{pr.number} says it fixes it.{self._link(key)}")
 
-    def on_pr_finished(self, project, number: int, merged: bool, title: str = "") -> None:
+    def on_pr_finished(self, project, number: int, merged: bool, title: str = "", merge_sha: str = "") -> None:
         """A PR that was open is now merged or closed."""
         state = "merged" if merged else "closed"
         for t in self.t.by_link("pr", str(number), project.name):
             meta = self.t.link_meta(t["id"], "pr", str(number))
             if meta.get("state") == state:
                 continue
-            self.t.set_link_meta(t["id"], "pr", str(number), {**meta, "state": state})
+            self.t.set_link_meta(t["id"], "pr", str(number), {**meta, "state": state, **({"merge_sha": merge_sha} if merge_sha else {})})
             if merged and meta.get("closes"):
                 self.t.system_note(project.name, t["key"], "system:github", "pr", f"merged in PR #{number}")
                 if project.repo is None or not project.repo.app:
@@ -391,22 +416,73 @@ class TicketFlow:
                 self.t.comment(project.name, "system:github", t["key"], f"PR #{number} was closed without merging.", author="system:github")
                 self.t.system_move(project.name, t["key"], "doing", "system:github")
 
-    def on_merge(self, project, number: int, author: str, title: str = "") -> None:
+    def on_merge(self, project, number: int, author: str, title: str = "", sha: str = "") -> None:
         """The Gatekeeper itself merged a PR: update its tickets at once instead of waiting for the next poll."""
         ident = self._reverse_logins(project).get(author)
         if ident:
             self.last_merge[project.name] = (ident, self.svc.now())
-        self.on_pr_finished(project, number, True, title)
+        self.on_pr_finished(project, number, True, title, merge_sha=sha)
+
+    def _contains(self, project, merge_sha: str, deployed: str) -> bool | None:
+        """Does the deployed commit include the merge commit? None when that cannot be told."""
+        if not merge_sha or not deployed or self.svc.github is None or project.repo is None:
+            return None
+        if merge_sha[:7] == deployed[:7]:
+            return True
+        try:
+            return self.svc.github.compare(project.repo.name, merge_sha, deployed) in ("ahead", "identical")
+        except Exception:                                                      # GitHubError, or a malformed sha
+            return None
 
     def on_deploy_succeeded(self, project, app: str, deployment: str) -> None:
-        """A finished deploy of the repository's app: tickets whose fix has merged are linked to it and done."""
+        """A finished deploy of the repository's app: a ticket whose fix has merged is done once the deployed commit includes the merge commit.
+        A deploy of an older commit leaves it in review. If the deployed commit cannot be read, nothing moves and the ticket says so."""
         if project.repo is None or project.repo.app != app:
             return
-        for t in self.t.merged_awaiting_deploy(project.name):
+        waiting = self.t.merged_awaiting_deploy(project.name)
+        if not waiting:
+            return
+        deployed = ""
+        if deployment:
+            try:
+                deployed = self.svc.coolify.deployment_commit(deployment)
+            except Exception:                                                  # CoolifyError, or a backend without the call
+                deployed = ""
+        for t in waiting:
+            verdict = self._contains(project, t.get("merge_sha", ""), deployed)
+            if verdict is False:
+                continue
+            if verdict is None:
+                self.t.system_note(project.name, t["key"], "system:deploy", "deploy", f"deploy {(deployment or 'latest')[:8]} succeeded; commit not checked")
+                continue
             ref = (deployment or "latest")[:40]
             self.t.link(project.name, "system:deploy", t["key"], "deploy", ref, system=True)
             if self.t.system_move(project.name, t["key"], "done", "system:deploy"):
-                self._notify_maintainers(project, f"{t['key']} done: shipped in a successful deploy of {app}.{self._link(t['key'])}")
+                self._notify_maintainers(project, f"{t['key']} done: shipped in a successful deploy of {app} ({deployed[:7]}).{self._link(t['key'])}")
+
+    def deliver_briefings(self, project) -> int:
+        """After the standup: each member's own briefing goes to their personal desk room. A member without one gets it in the maintainers room
+        right below the standup (Switch has no reply threads for agents to post into). Members with nothing to hear are skipped."""
+        desks = self.svc.cfg.desks.get(project.name, {})
+        fallback = sorted(project.maintainer_rooms or project.ops_rooms)[:1]
+        base = self.svc.cfg.dashboard.public_url
+        sent = 0
+        for who in sorted(self.t.members(project.name))[:20]:
+            with self.t.gk.lock:
+                row = self.t.gk.db.execute("SELECT last_at FROM briefing_state WHERE member=? AND project=?", (who, project.name)).fetchone()
+            facts = facts_for(self.t, project, who, github=self.svc.github, pending=self.svc.gk.pending_list(project.name), now=self.svc.now(), since=row[0] if row else None)
+            if not (facts["tickets"] or facts["changes"] or facts["review_requests"] or facts["approvals"] or facts["prs"]):
+                continue
+            rooms = [desks[who]] if who in desks else fallback
+            if not rooms:
+                continue
+            self.svc.post(rooms[0], render(facts, f"{base}/#/tickets" if base else ""))
+            with self.t.gk.lock:
+                self.t.gk.db.execute("INSERT OR REPLACE INTO briefing_state (member, project, last_at) VALUES (?,?,?)", (who, project.name, _now_iso(self.svc.now())))
+                self.t.gk.db.commit()
+            self.svc.gk.audit.write(project=project.name, actor="scheduler", event="briefing_served", action="ticket.briefing", target=who, own=True, desk=who in desks)
+            sent += 1
+        return sent
 
     # -- scheduled ----------------------------------------------------------------------------------------------------------------
 
@@ -451,5 +527,9 @@ class StandupScheduler:
             self.svc.gk.audit.write(project=project.name, actor="scheduler", event="briefing_served", action="ticket.standup", target=project.name)
             for room in sorted(project.maintainer_rooms or project.ops_rooms):
                 self.svc.post(room, text)
+            try:
+                self.flow.deliver_briefings(project)
+            except Exception:
+                log.exception("personal briefings failed")
             sent += 1
         return sent

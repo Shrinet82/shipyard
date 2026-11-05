@@ -21,7 +21,10 @@ import yaml
 from . import webhook
 from .config import Config, expand, load_config
 from .access import AgentAccess, Gateway, read_env
+from .clusterwatch import ClusterWatcher
 from .coolify import CoolifyMcp
+from .desks import Desks
+from .incidents import Incidents
 from .dashauth import DashAuth
 from .dashboard import Dashboard, serve as serve_dashboard
 from .digest import DigestScheduler
@@ -127,22 +130,32 @@ def run(config_path: str) -> None:
                       kube=kube, hostshell=hostshell, sbom=collector, dashauth=auth)
     tickets = Tickets(gk, cfg.projects, lambda p: dict(cfg.policy.members.get(p, {})), service._name, post=switch.post)
     service.flow = TicketFlow(service, tickets)
+    service.incidents = Incidents(db, gk.lock, gk.audit, service.now)
+    service.desks = Desks(cfg, expand(cfg.desks_file), gk.audit, _gateway_factory(cfg))
+    service.desks.load()
     serve(service, cfg.mcp_port, open(expand(cfg.mcp_token_file)).read().strip())
-    webhook.serve(_webhook_secret(cfg), service.on_coolify_event, cfg.alerts.bind, cfg.alerts.port)
+    gh_secret_file = expand(cfg.github.webhook_secret_file)
+    gh_secret = open(gh_secret_file).read().strip().encode() if os.path.exists(gh_secret_file) else None
+    webhook.serve(_webhook_secret(cfg), service.on_coolify_event, cfg.alerts.bind, cfg.alerts.port, gh_secret, service.on_github_hook if gh_secret else None)
+    log.info("GitHub webhooks %s (polling stays on as the fallback)", "accepted at /hooks/github" if gh_secret else "off: no secret file")
 
     stop = switch.stop
     _start_dashboard(cfg, gk, auth, collector, members, service, coolify, kube, github, hostshell, db, stop)
     standup = StandupScheduler(service, service.flow)
+    if kube and cfg.alerts.cluster_poll_seconds > 0 and any(p.k8s_apps for p in cfg.projects.values()):
+        threading.Thread(target=_loop, args=(stop, cfg.alerts.cluster_poll_seconds, ClusterWatcher(service, kube).poll_once, "cluster alerts"), daemon=True).start()
     threading.Thread(target=_loop, args=(stop, 60, standup.tick, "standup"), daemon=True).start()
     threading.Thread(target=_loop, args=(stop, 900, service.flow.due_tick, "due dates"), daemon=True).start()
     threading.Thread(target=_loop, args=(stop, 30, service.sweep, "sweep"), daemon=True).start()
     if github:
         watcher = PrWatcher(cfg, gk, github, switch.post, flow=service.flow)
+        service.github_hooks.append(watcher.on_hook)
         digest = DigestScheduler(cfg, gk, github, switch.post, service._name)
         threading.Thread(target=_loop, args=(stop, cfg.github.poll_seconds, watcher.poll_once, "PR poll"), daemon=True).start()
         threading.Thread(target=_loop, args=(stop, 30, digest.tick, "digest"), daemon=True).start()
         threading.Thread(target=watcher.poll_once, daemon=True).start()
     if collector:
+        service.github_hooks.append(lambda event, payload: collector.poll_once() if event == "workflow_run" else None)   # a finished CI run: look for its SBOM now
         threading.Thread(target=_loop, args=(stop, cfg.sbom.poll_seconds, collector.poll_once, "SBOM poll"), daemon=True).start()
         threading.Thread(target=collector.poll_once, daemon=True).start()
     log.info("Gatekeeper up: %d project(s), GitHub %s, SBOM gate %s, Kubernetes %s, %d host(s)", len(cfg.projects),
@@ -195,6 +208,9 @@ def main() -> None:
     w = sub.add_parser("webhook-url", help="print the Coolify webhook URL (contains a secret)")
     w.add_argument("--config", default="shipyard.yaml")
     w.add_argument("--host", required=True, help="this machine's private address, as Coolify will reach it")
+    g = sub.add_parser("github-webhook", help="create the GitHub webhook secret (once) and print what to paste into the GitHub App's webhook settings")
+    g.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
+    g.add_argument("--host", required=True, help="the public address GitHub will reach, for example gatekeeper.example.com:8766")
     t = sub.add_parser("dashboard-token", help="print a dashboard sign-in token for a member (run on the VM; shown once)")
     t.add_argument("--config", default="shipyard.yaml")
     t.add_argument("--identity", required=True, help="the member's chat id, as `@gatekeeper whoami` prints it")
@@ -219,6 +235,17 @@ def main() -> None:
         _add_owner(args)
     elif args.cmd == "run":
         run(args.config)
+    elif args.cmd == "github-webhook":
+        cfg = load_config(args.config)
+        path = Path(expand(cfg.github.webhook_secret_file))
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(secrets.token_urlsafe(32))
+        print(f"Webhook URL:    http://{args.host}/hooks/github\nContent type:  application/json\nSecret:        {path.read_text().strip()}\n"
+              f"Events:         Pull requests, Pull request reviews, Check runs, Check suites, Workflow runs, Commit statuses\n"
+              f"Then restart the Gatekeeper. GitHub signs every delivery; anything unsigned or wrongly signed is dropped.")
     elif args.cmd == "dashboard-token":
         cfg = load_config(args.config)
         project = args.project or next(iter(cfg.projects))

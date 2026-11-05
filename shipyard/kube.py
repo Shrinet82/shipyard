@@ -93,6 +93,31 @@ class Kube:
         return (f"{name}: {st.get('readyReplicas', 0)}/{want} ready (image {image}, revision {rev})"
                 + ("; pods: " + ", ".join(pods) if pods else "; no pods"))
 
+    def problems(self, namespace: str, name: str, restart_limit: int) -> list[dict]:
+        """Pods of a deployment that crash-loop or have restarted `restart_limit` times or more. One entry per pod, the worse one first."""
+        dep = self._deployment(namespace, name)
+        out = []
+        for p in self._pods(namespace, dep):
+            worst = None
+            for cs in p.get("status", {}).get("containerStatuses") or []:
+                restarts = int(cs.get("restartCount", 0) or 0)
+                waiting = ((cs.get("state", {}) or {}).get("waiting", {}) or {}).get("reason") or ""
+                kind = "restart_limit" if restarts >= restart_limit else "container_crashed" if waiting == "CrashLoopBackOff" else None
+                if kind and (worst is None or kind == "restart_limit"):
+                    worst = {"pod": p["metadata"]["name"], "kind": kind, "restarts": restarts, "waiting": waiting}
+            if worst:
+                out.append(worst)
+        return out
+
+    def disk_pressure(self, namespace: str) -> list[str]:
+        """Nodes that report DiskPressure. Reading nodes needs a cluster-wide read; without it this is empty, not an error."""
+        try:
+            nodes = json.loads(self._kubectl("viewer", namespace, ["get", "nodes", "-o", "json"])).get("items", [])
+        except (KubeError, ValueError):
+            return []
+        return [n["metadata"]["name"] for n in nodes
+                if any(c.get("type") == "DiskPressure" and c.get("status") == "True" for c in n.get("status", {}).get("conditions", []))]
+
     def logs(self, namespace: str, name: str, lines: int = 40) -> list[str]:
         lines = max(1, min(int(lines), 200))
         dep = self._deployment(namespace, name)
