@@ -345,7 +345,9 @@ class Installer:
         path = Path(self.get("agents.codex_config", "", str(self.home / ".codex/config.toml")))
         text = ('# Written by `shipyard init`. The agents hold only the Gatekeeper\'s request tool: no Coolify, GitHub or Switch credential.\n'
                 '[mcp_servers.gatekeeper]\nurl = "http://127.0.0.1:8765/mcp"\n'
-                f'http_headers = {{ Authorization = "Bearer {token}" }}\n')
+                f'http_headers = {{ Authorization = "Bearer {token}" }}\n\n'
+                '# Codex account connectors (GitHub, Figma, ...) belong to whoever signed in to Codex; the agents must not inherit them.\n'
+                '[features]\napps = false\n')
         _write_secret(path, text)
         self.say(f"  wrote the agents' tool config ({path})")
 

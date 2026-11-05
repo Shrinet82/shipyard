@@ -100,6 +100,8 @@ Everything can also run without questions: `python3 -m shipyard init --answers a
 - *Kubernetes (optional)*: `deploy/k8s/` has the RBAC and a workload; `scripts/k8s_kubeconfigs.sh` makes the three least-privilege kubeconfigs.
 - *Production shell (optional)*: `deploy/ops-shell/install.sh` sets up the forced-command SSH key.
 
+**Adding a room later** (for example an incidents room): add its id under `rooms:` in `shipyard.yaml` (`incidents:` for alerts), restart the Gatekeeper, then press **Sync from roles** on the dashboard's *Agent access* page. Until you do, Switch tells the Gatekeeper it may not address the agents in the new room, so the Ops Agent never wakes there. With an incidents room, an alert goes to it and to the ops rooms; the Ops Agent is asked once, in the incidents room.
+
 ## The dashboard
 
 It listens on `127.0.0.1:8780` only. Reach it through a tunnel:
@@ -116,7 +118,7 @@ It shows everything and can change two things, for owners only and both audited:
 
 The agents are language models reading text from strangers (PR descriptions, logs, chat). The design assumes they can be fooled, and makes that harmless:
 
-1. **Agents can't act.** They hold no credential for Coolify, GitHub, the cluster or Switch, and run as an unprivileged Linux user with the platform's secrets out of reach. They can only ask the Gatekeeper, citing the human message that asked. A proposal always waits for a human's approval, and an agent's own "approve" is ignored and logged.
+1. **Agents can't act.** They hold no credential for Coolify, GitHub, the cluster or Switch, and run as an unprivileged Linux user with the platform's secrets out of reach. Codex's account connectors (GitHub, Figma, ...) are switched off for them (`[features] apps = false`): a trial agent showed they would otherwise inherit whatever the Codex login had connected. They can only ask the Gatekeeper, citing the human message that asked. A proposal always waits for a human's approval, and an agent's own "approve" is ignored and logged.
 2. **Identity comes from Switch**, not from the message text. A role is bound to the platform account that sent it.
 3. **Approvals are single use**, bound to the exact action, target and arguments (and, for deploys and merges, the **commit**), expire in 10 minutes, and can't be given by the person who asked (except an owner, or the person an agent acted for).
 4. **Chat text never reaches a shell.** Commands are parsed by a fixed grammar; backends are driven with argument lists; names, namespaces and replica counts are validated. Logs and command output are redacted, stripped of mentions and shown as data.

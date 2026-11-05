@@ -191,7 +191,7 @@ def test_the_switch_template_creates_rooms_incidents_and_links_and_reuses_existi
     # the Gatekeeper is registered before the template runs, so the template can name it
     assert [c[0] for c in gws[0].calls].index("PUT") < [c[1] for c in gws[0].calls].index("/rooms/from-template-document")
     toml = (home / "codex.toml").read_text()
-    assert toml.count("[mcp_servers") == 1 and "COOLIFY_TOKEN" not in toml and oct((home / "codex.toml").stat().st_mode & 0o777) == "0o600"
+    assert toml.count("[mcp_servers") == 1 and "apps = false" in toml and "COOLIFY_TOKEN" not in toml and oct((home / "codex.toml").stat().st_mode & 0o777) == "0o600"
 
 
 def test_without_agents_or_a_machine_it_falls_back_to_plain_rooms_and_says_why(home):
