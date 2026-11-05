@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from .sbom import COMMIT, render_html
+from .sbom import COMMIT, _mark_new_licences, parse_licences, render_html
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sbom_reports (
@@ -71,7 +71,27 @@ class SbomStore:
             path = self.root / self._check(commit) / "report.json"
         except ValueError:
             return None
-        return json.loads(path.read_text()) if path.is_file() else None
+        if not path.is_file():
+            return None
+        report = json.loads(path.read_text())
+        if "licence_flags" not in report:                       # reports stored before licence flagging: read them from the saved SPDX
+            report = self._add_licences(commit, report)
+        return report
+
+    def _add_licences(self, commit: str, report: dict[str, Any]) -> dict[str, Any]:
+        spdx = self.root / commit / FILES["spdx"]
+        flags: list[dict[str, Any]] = []
+        if spdx.is_file():
+            try:
+                flags = parse_licences(json.loads(spdx.read_text()))
+            except (ValueError, RecursionError):
+                flags = []
+        base = self.get(report["baseline"]) if report.get("baseline") and report["baseline"] != commit else None
+        _mark_new_licences(flags, base)
+        report = {**report, "licence_flags": flags}
+        (self.root / commit / "report.json").write_text(json.dumps(report, sort_keys=True))
+        (self.root / commit / FILES["html"]).write_text(render_html(report))
+        return report
 
     def resolve(self, prefix: str) -> str | None:
         """A full commit id from an abbreviation (7 to 40 hex characters), or None."""

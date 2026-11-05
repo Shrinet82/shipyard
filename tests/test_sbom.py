@@ -368,3 +368,17 @@ def test_real_alpine_licences_are_read():
 
 def test_cyclonedx_has_no_licence_flags():
     assert sbom.parse_licences({"bomFormat": "CycloneDX", "components": []}) == [] and sbom.parse_licences([]) == []
+
+
+def test_a_report_stored_before_licence_flagging_gets_its_flags_from_the_saved_spdx(store):
+    import json as _j
+    r = lic_report([("a", "1", "GPL-3.0-only"), ("b", "1", "MIT")])
+    old = dict(r)
+    del old["licence_flags"]
+    store.save(old, {"spdx": _j.dumps(spdx_lic([("a", "1", "GPL-3.0-only"), ("b", "1", "MIT")])).encode()})
+    path = store.root / SHA / "report.json"
+    assert "licence_flags" not in _j.loads(path.read_text())
+    got = store.get(SHA)
+    assert [f["key"] for f in got["licence_flags"]] == ["pypi/a"] and "licence_flags" in _j.loads(path.read_text())
+    store.save({**old, "commit": SHA2}, {})                         # no saved SPDX: no flags, no crash
+    assert store.get(SHA2)["licence_flags"] == []
