@@ -33,6 +33,8 @@ CI for PR #16 (commit 5862800): 3 check(s), 2 workflow run(s)
     artifacts: playwright-trace (4 KB, expired); not the SBOM workflow, so the gate does not read it
 ```
 
+If your `shipyard.yaml` was written before this command existed, add `repo.ci: read` under `actions:` and restart the Gatekeeper. An action that is not listed is refused, so until you do, `ci` answers "unknown action 'repo.ci'".
+
 It also says plainly when a required check **never reported** on the commit (the usual sign that a workflow was renamed or is disabled) and when the SBOM workflow ran but **its artifacts are missing**. It only reads: nobody can start, re-run or change a pipeline through it.
 
 ## Several pipelines: a worked example
