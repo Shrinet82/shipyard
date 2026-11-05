@@ -18,6 +18,9 @@ ROOMS = [{"id": "r-ops-mm", "name": "demo-ops", "bridge_display_name": "Mattermo
 
 class FakeGw:
     rooms = ROOMS
+    controllers = [{"id": "c1", "name": "build-vm"}]
+    agents = ["ops-agent", "repo-agent"]
+    template_status = 201
 
     def __init__(self, *a):
         self.calls = []
@@ -31,7 +34,14 @@ class FakeGw:
                 return 400, "Internal rooms require at least one agent"
             return 200, {"id": "new-" + body["name"]}
         if method == "GET" and path == "/management/controllers":
-            return 200, [{"id": "c1", "name": "build-vm"}]
+            return 200, type(self).controllers
+        if method == "GET" and path == "/agents":
+            return 200, [{"name": n} for n in type(self).agents]
+        if method == "POST" and path == "/rooms/from-template-document":
+            if type(self).template_status != 201:
+                return 409, json.dumps({"detail": "x", "code": "agents_not_created", "problems": [{"slot": "ops_agent", "code": "provider_login_missing", "message": "Codex is not signed in"}]})
+            p = body["inputs"]["project"]
+            return 201, {"created_agents": [], "room": {"group_name": p, "rooms": [{"room_id": f"t-{k}", "room_name": f"{p}-{k}"} for k in ("ops", "incidents", "maintainers")], "errors": []}}
         return 200, {}
 
 
@@ -164,19 +174,48 @@ def test_skipping_coolify_and_github_still_gives_a_working_install(home):
     assert cfg.projects["demo"].apps == {} and cfg.projects["demo"].repo is None and cfg.github.app_id == ""
 
 
-def test_agents_are_created_from_the_templates_and_get_only_the_gatekeeper_tool(home):
-    a = answers(home, agents={"create": "yes", "home": str(home / "agenthome"), "controller": "build-vm", "codex_config": str(home / "codex.toml")})
+def test_the_switch_template_creates_rooms_incidents_and_links_and_reuses_existing_agents(home):
+    a = answers(home)
+    del a["rooms"]
+    a["agents"] = {"create": "yes", "codex_config": str(home / "codex.toml")}
     gws = []
     inst = installer(home, a)
-    inst.gateway = lambda *x: gws.append(FakeGw()) or gws[-1]
+    inst.gateway = lambda *x: gws.append(EmptyGw()) or gws[-1]
     inst.install()
-    posts = [c for c in gws[0].calls if c[1] == "/management/agents"]
-    assert [p[2]["name"] for p in posts] == ["ops-agent", "repo-agent"] and posts[0][2]["controller_id"] == "c1"
-    assert posts[0][2]["definition"]["directory"] == str(home / "agenthome/agents/ops-agent") and (home / "agenthome/agents/ops-agent").is_dir()
-    assert "request_action" in posts[0][2]["definition"]["instructions"]
+    run = next(c for c in gws[0].calls if c[1] == "/rooms/from-template-document")[2]
+    assert run["inputs"] == {"project": "demo"} and run["filled"] == {"ops_agent": "ops-agent", "repo_agent": "repo-agent"} and run["template_name"] == "shipyard"
+    assert "version: 2" in run["template"] and "links:" in run["template"]
+    p = load_config(home / "shipyard.yaml").projects["demo"]
+    assert p.ops_rooms == {"t-ops"} and p.incident_rooms == {"t-incidents"} and p.maintainer_rooms == {"t-maintainers"}
+    assert p.alert_rooms == {"t-incidents"} and p.room_names["t-incidents"] == "#demo-incidents"
+    # the Gatekeeper is registered before the template runs, so the template can name it
+    assert [c[0] for c in gws[0].calls].index("PUT") < [c[1] for c in gws[0].calls].index("/rooms/from-template-document")
     toml = (home / "codex.toml").read_text()
-    assert toml.count("[mcp_servers") == 1 and "[mcp_servers.gatekeeper]" in toml and "COOLIFY_TOKEN" not in toml and "cool-secret-token" not in toml
-    assert oct((home / "codex.toml").stat().st_mode & 0o777) == "0o600"
+    assert toml.count("[mcp_servers") == 1 and "COOLIFY_TOKEN" not in toml and oct((home / "codex.toml").stat().st_mode & 0o777) == "0o600"
+
+
+def test_without_agents_or_a_machine_it_falls_back_to_plain_rooms_and_says_why(home):
+    class Bare(EmptyGw):
+        controllers = []
+        agents = []
+    a = answers(home, agents={"create": "yes", "codex_config": str(home / "codex.toml")})
+    del a["rooms"]
+    inst = installer(home, a)
+    inst.gateway = lambda *x: Bare()
+    inst.install()
+    assert any("not using the Switch template" in l and "controller" in l for l in inst.log)
+    assert load_config(home / "shipyard.yaml").projects["demo"].ops_rooms == {"new-demo-ops"}
+
+
+def test_a_refused_template_run_names_the_problem(home):
+    class Refusing(EmptyGw):
+        template_status = 409
+    a = answers(home, agents={"create": "yes", "codex_config": str(home / "codex.toml")})
+    del a["rooms"]
+    inst = installer(home, a)
+    inst.gateway = lambda *x: Refusing()
+    with pytest.raises(InitError, match="Codex is not signed in"):
+        inst.install()
 
 
 def test_interactive_mode_asks_lists_rooms_and_hides_the_token(home):

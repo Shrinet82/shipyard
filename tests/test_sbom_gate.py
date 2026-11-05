@@ -37,6 +37,16 @@ class GateCoolify(FakeCoolify):
         return "rolled back"
 
 
+class TagGitHub(GateGitHub):
+    tags = {"v1.0.0": MAIN}
+
+    def tag_commit(self, repo, tag):
+        self._guard()
+        if tag not in self.tags:
+            raise GitHubError("GitHub answered 404")
+        return self.tags[tag]
+
+
 class FakeCollector:
     """Stands in for SbomCollector: reports by commit, and 'GitHub is down' on demand."""
 
@@ -82,7 +92,7 @@ def env(tmp_path):
     clock = Clock()
     db = sqlite3.connect(":memory:", check_same_thread=False)
     gk = Gatekeeper(cfg.policy, db, clock)
-    gh, cool, posts = GateGitHub(), GateCoolify(), []
+    gh, cool, posts = TagGitHub(), GateCoolify(), []
     store = SbomStore(tmp_path / "sbom", db, now=clock)
     col = FakeCollector(store)
     svc = Service(cfg, gk, cool, lambda r, t: posts.append((r, t)), now=clock, github=gh, sbom=col)
@@ -330,9 +340,49 @@ def test_sbom_command_shows_reports_and_decision(env):
     env.say(VIEWER, "sbom deadbeef")
     assert "No SBOM report" in env.last()
     env.say(VIEWER, "sbom 99")
-    assert "no pull request #99" in env.last()
+    assert "no pull request, release or tag called 99" in env.last()
 
 
 def test_sbom_command_needs_membership(env):
     env.say("@switch-x-stranger:localhost", "sbom")
     assert env.last().startswith("Denied") and "not a member" in env.last()
+
+
+def test_sbom_by_release_name_app_live_and_tag(env):
+    baseline(env)                                             # MAIN is the release that is live
+    env.say(VIEWER, "sbom demo-web")
+    assert "SBOM for demo-web, the release that is live" in env.last()
+    env.say(VIEWER, "sbom live")
+    assert "the release that is live" in env.last() and "commit 9999999" in env.last()
+    env.say(VIEWER, "sbom v1.0.0")
+    assert "SBOM for release v1.0.0" in env.last() and "commit 9999999" in env.last()
+    env.say(VIEWER, "sbom v9.9.9")
+    assert "no pull request, release or tag called v9.9.9" in env.last()
+
+
+def test_sbom_live_before_any_release(env):
+    env.say(VIEWER, "sbom live")
+    assert "No release of demo-web has been deployed" in env.last()
+
+
+def test_a_merge_asked_in_the_maintainers_room_posts_the_deploy_plan_with_the_report_in_the_ops_room(env):
+    baseline(env)
+    env.col.add(SHA, [("flask", "3.1")], [], pr_=8)
+    env.gh.set(pr(8, "Bump the footer"))
+    env.n += 1
+    env.svc.handle_event({"type": "message", "room_id": MAINT, "payload": {"message_id": f"mm{env.n}", "sender": M1, "sender_name": "maint1",
+                          "sender_kind": None, "body": "@gatekeeper merge 8", "addressed": True}})
+    in_maint = [t for r, t in env.posts if r == MAINT][-1]
+    in_ops = [t for r, t in env.posts if r == OPS]
+    assert "Approval needed" in in_maint and "SBOM for PR #8" in in_maint                 # the report is part of the approval message
+    assert in_ops and "Deploy plan: merging PR #8 will deploy demo-web" in in_ops[-1] and "SBOM for PR #8" in in_ops[-1]
+    aid_ = re.search(r"id ([0-9a-f]{8})", in_maint).group(1)
+    assert aid_ in in_ops[-1]
+
+
+def test_a_merge_asked_in_the_ops_room_is_not_posted_twice(env):
+    baseline(env)
+    env.col.add(SHA, [("flask", "3.1")], [], pr_=8)
+    env.gh.set(pr(8))
+    env.say(M1, "merge 8")
+    assert len([1 for r, t in env.posts if "Deploy plan" in t]) == 0 and "SBOM for PR #8" in env.last()

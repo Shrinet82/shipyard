@@ -52,7 +52,8 @@ class SbomCollector:
                         docs[kind] = load_json(raw[kind])
             baseline = self.store.baseline(project.name, repo.app)
             report = build_report(commit=commit, repo=repo.name, pr=pr, ref=ref, run=run, workflow=workflow, sbom_doc=docs["spdx"],
-                                  grype_doc=docs["scan"], baseline=baseline, trust=trust, now=self.now())
+                                  grype_doc=docs["scan"], baseline=baseline, trust=trust, now=self.now(),
+                                  copyleft=self.cfg.sbom.copyleft)
         except SbomError as exc:
             report = {"commit": commit, "repo": repo.name, "pr": pr, "ref": ref, "run_id": run.get("id"), "workflow": workflow,
                       "collected_at": self.now(), "format": "", "package_count": 0, "packages": {}, "findings": [],

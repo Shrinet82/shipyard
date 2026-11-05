@@ -31,6 +31,13 @@ class FakeGateway:
         if method == "GET" and path == "/agents":
             return 200, [{"id": "a1", "name": "ops-agent", "addressing_policy": self.policy},
                          {"id": "a2", "name": "repo-agent", "addressing_policy": None}, {"id": "g", "name": "gatekeeper", "addressing_policy": None}]
+        if method == "GET" and path == "/rooms":
+            return 200, [{"id": OPS, "name": "demo-ops", "bridge_display_name": "Discord", "group_name": "demo", "connected_user_count": 3,
+                          "external_channel_url": "https://discord.com/channels/1/2"},
+                         {"id": MAINT, "name": "demo-maintainers", "bridge_display_name": "Discord", "group_name": "demo", "connected_user_count": 2,
+                          "external_channel_url": "javascript:alert(1)"}, {"id": "other", "name": "someone-elses"}]
+        if method == "GET" and path.startswith("/rooms/"):
+            return 200, {"agent_ids": ["a1", "g"] if path.endswith(OPS) else ["a2", "g"]}
         if method == "GET" and path == "/collaborations":
             return 200, [{"bridge_id": UUID, "bridge_type": "discord"}]
         if method == "GET" and path.endswith("/users"):
@@ -419,3 +426,13 @@ def test_dashboard_login_verb_in_chat(env):
     assert "unknown, used or expired" in posts[-1]
     events = {(r["event"], r["action"]) for r in env.gk.audit.recent("demo", 10)}
     assert ("allowed", "dashboard.login") in events and ("denied", "dashboard.login") in events
+
+
+def test_switch_rooms_page_shows_only_the_projects_rooms_and_safe_links(env):
+    s, d = env.call("GET", "/api/rooms", who_="view")
+    assert s == 200 and [r["name"] for r in d["rooms"]] == ["demo-maintainers", "demo-ops"] or {r["name"] for r in d["rooms"]} == {"demo-ops", "demo-maintainers"}
+    by = {r["name"]: r for r in d["rooms"]}
+    assert by["demo-ops"]["agents"] == ["gatekeeper", "ops-agent"] and by["demo-ops"]["kind"] == "ops" and by["demo-ops"]["alerts"] is True
+    assert by["demo-ops"]["url"] == "https://discord.com/channels/1/2" and by["demo-maintainers"]["url"] is None       # a javascript: link is dropped
+    assert by["demo-maintainers"]["kind"] == "maintainers" and "someone-elses" not in json.dumps(d)
+    assert env.call("GET", "/api/rooms", who_=None)[0] == 401

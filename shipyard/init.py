@@ -83,8 +83,9 @@ class Installer:
         self.run = run or (lambda argv, **kw: subprocess.run(argv, capture_output=True, text=True, timeout=60, **kw))
         self.github_check, self.python, self.workdir = github_check or self._github_check, python, workdir
         self.t0 = time.time()
-        self.created: dict[str, list[str]] = {"ops": [], "maintainers": []}
-        self.to_create: dict[str, list[str]] = {"ops": [], "maintainers": []}
+        self.created: dict[str, list[str]] = {"ops": [], "maintainers": [], "incidents": []}
+        self.use_template, self.filled = False, {}
+        self.to_create: dict[str, list[str]] = {"ops": [], "maintainers": [], "incidents": []}
         self.room_labels: dict[str, str] = {}
         self.paths = {"config": home / "shipyard.yaml", "gatekeeper": home / "gatekeeper.json", "mcp": home / "gatekeeper-mcp.token",
                       "coolify": home / "coolify.env", "unit": home / ".config/systemd/user/shipyard-gatekeeper.service"}
@@ -145,9 +146,19 @@ class Installer:
         if status != 200 or not isinstance(rows, list):
             raise InitError(f"Switch would not list its rooms ({status})")
         label = lambda r: f"{r['name']} ({r.get('bridge_display_name') or 'room'})"  # noqa: E731
-        chosen: dict[str, list[str]] = {"ops": [], "maintainers": []}
-        self.to_create: dict[str, list[str]] = {"ops": [], "maintainers": []}
+        chosen: dict[str, list[str]] = {"ops": [], "maintainers": [], "incidents": []}
+        self.to_create: dict[str, list[str]] = {"ops": [], "maintainers": [], "incidents": []}
         create = str(self.a.get("rooms", {}).get("create", "")).lower() in ("true", "yes", "y")
+        if "rooms" not in self.a and self.get("agents.create", "", "yes").lower() in ("yes", "y", "true") \
+                and not any(r["name"].startswith(project + "-") for r in rows):
+            filled, why = self.template_plan(gw)
+            if why is None:
+                if not self.interactive or self._ask(f"Create the {project} rooms, links and agents from the Shipyard Switch template? (yes/no)", "yes").lower() in ("yes", "y"):
+                    self.use_template, self.filled = True, filled
+                    self.room_labels = {}
+                    return chosen
+            else:
+                self.say(f"  not using the Switch template: {why}")
         if not rows and self.interactive and "rooms" not in self.a:
             self.say("  Switch has no rooms yet.")
             if self._ask(f"Create {project}-ops and {project}-maintainers? (yes/no)", "yes").lower() in ("yes", "y"):
@@ -155,7 +166,7 @@ class Installer:
                 self.room_labels = {}
                 return chosen
         if not self.interactive and "rooms" not in self.a:         # the conventional names: use them if they exist, else make them
-            for kind in chosen:
+            for kind in ("ops", "maintainers"):
                 name = f"{project}-{kind}"
                 hits = [r["id"] for r in rows if r["name"] == name]
                 chosen[kind] += hits
@@ -177,7 +188,7 @@ class Installer:
                 elif not hits:
                     raise InitError(f"no room called {item!r} in Switch (add `rooms: {{create: true}}` to make it)")
                 chosen[kind] += [h for h in hits if h not in chosen[kind]]
-        if not any(chosen.values()) and not any(self.to_create.values()):
+        if not any(chosen.values()) and not any(self.to_create.values()) and not self.use_template:
             raise InitError("pick at least one room")
         self.room_labels = {r["id"]: f"#{r['name']} ({r.get('bridge_display_name') or 'room'})" for r in rows}
         return chosen
@@ -240,8 +251,8 @@ class Installer:
             "coolify": {"url": coolify[0], "token_file": str(self.paths["coolify"])},
             "gatekeeper": {"mcp_port": 8765, "mcp_token_file": str(self.paths["mcp"]), "db_path": str(self.home / "shipyard.db")},
             "projects": {project: {
-                "rooms": {"ops": rooms["ops"], "maintainers": rooms["maintainers"]},
-                "room_names": {k: v for k, v in self.room_labels.items() if k in rooms["ops"] + rooms["maintainers"]},
+                "rooms": {"ops": rooms["ops"], "maintainers": rooms["maintainers"], **({"incidents": rooms["incidents"]} if rooms.get("incidents") else {})},
+                "room_names": {k: v for k, v in self.room_labels.items() if k in sum(rooms.values(), [])},
                 "apps": coolify[2], "members": {}}},
             "actions": dict(defaults.ACTIONS), "min_role": dict(defaults.MIN_ROLE), "approval_overrides": dict(defaults.APPROVAL_OVERRIDES),
             "approval_timeout_seconds": 600,
@@ -257,8 +268,8 @@ class Installer:
                                                 **({"app": gh["deploy"]} if gh["deploy"] else {})}
         return cfg
 
-    def register(self, gw: Any, env: dict[str, str], url: str, room_ids: list[str]) -> str:
-        """Create (or replace) the Gatekeeper agent in Switch, open its addressing and add it to the project's rooms."""
+    def register(self, gw: Any, env: dict[str, str], url: str) -> str:
+        """Create (or replace) the Gatekeeper agent in Switch and open its addressing: it authorizes people itself."""
         status, reg = self.http("POST", f"{url}/agents", {"Authorization": f"Bearer {env.get('AGENT_REGISTRATION_TOKEN', '')}"}, {
             "name": "gatekeeper", "description": "Shipyard Gatekeeper: roles, approvals and audit for chat-driven ops",
             "connector_type": "custom", "overwrite": True,
@@ -269,41 +280,64 @@ class Installer:
         _write_secret(self.paths["gatekeeper"], json.dumps({"id": reg["id"], "api_key": reg["api_key"], "name": "gatekeeper"}))
         if not self.paths["mcp"].exists():
             _write_secret(self.paths["mcp"], secrets.token_hex(24))
-        gw.call("PUT", f"/agents/{reg['id']}/addressing-policy", {"policy": None})        # the Gatekeeper authorizes by itself
-        for kind, names in self.to_create.items():
-            for name in names:
-                status, room = gw.call("POST", "/rooms", {"name": name, "description": f"Shipyard {kind} room", "agent_names": ["gatekeeper"]})
-                if status not in (200, 201) or not isinstance(room, dict) or "id" not in room:
-                    raise InitError(f"Switch would not create the room {name!r} ({status}): {str(room)[:120]}")
-                self.created[kind].append(room["id"])
-                self.room_labels[room["id"]] = f"#{name}"
-                self.say(f"  created room #{name}")
-        for room in room_ids:
-            status, _ = gw.call("POST", f"/rooms/{room}/agents", {"agent_ids": [reg["id"]]})
-            if status not in (200, 201, 204, 409):
-                self.say(f"  warning: could not add the Gatekeeper to room {room} ({status})")
-        self.say("  registered the Gatekeeper in Switch and added it to the rooms")
+        gw.call("PUT", f"/agents/{reg['id']}/addressing-policy", {"policy": None})
+        self.say("  registered the Gatekeeper in Switch")
         return str(reg["id"])
 
-    def agents(self, gw: Any) -> None:
-        """Create the Ops and Repo agents from the templates, on a controller the person names."""
-        status, ctrls = gw.call("GET", "/management/controllers")
-        rows = (ctrls if isinstance(ctrls, list) else (ctrls or {}).get("controllers", [])) if status == 200 else []
-        if not rows:
-            self.say("  skipped the agents: Switch has no enrolled controller (see README, 'The agents')")
-            return
-        want = self.get("agents.controller", "Controller to run the agents on", rows[0]["name"])
-        ctrl = next((c for c in rows if want in (c["name"], c["id"])), None)
-        if ctrl is None:
-            raise InitError(f"no controller called {want!r} (there is: {', '.join(c['name'] for c in rows)})")
-        home = self.get("agents.home", "Directory the agents work in", str(self.home))
-        for name in ("ops-agent", "repo-agent"):
-            tpl = json.loads((self.workdir / "templates/agents" / f"{name}.json").read_text())
-            tpl["definition"]["directory"] = tpl["definition"]["directory"].format(agent_home=home)
-            Path(tpl["definition"]["directory"]).mkdir(parents=True, exist_ok=True)
-            status, r = gw.call("POST", "/management/agents", {"name": tpl["name"], "description": tpl["description"], "controller_id": ctrl["id"],
-                                                               "desired_state": "running", "definition": tpl["definition"]})
-            self.say(f"  {name}: " + ("created" if status in (200, 201) else f"Switch answered {status} (it may exist already)"))
+    # -- rooms and agents: through Switch's own template, or plain rooms when it cannot be used ------------------------
+
+    def template_plan(self, gw: Any) -> tuple[dict[str, str], str | None]:
+        """(slots filled by agents Switch already has, why the template cannot run or None). A slot with no agent needs a machine."""
+        status, rows = gw.call("GET", "/agents")
+        have = {a["name"] for a in (rows if isinstance(rows, list) else (rows or {}).get("agents", []))} if status == 200 else set()
+        filled = {slot: name for slot, name in (("ops_agent", "ops-agent"), ("repo_agent", "repo-agent")) if name in have}
+        if len(filled) < 2:
+            status, ctrls = gw.call("GET", "/management/controllers")
+            machines = (ctrls if isinstance(ctrls, list) else (ctrls or {}).get("controllers", [])) if status == 200 else []
+            if not machines:
+                return filled, "Switch has no agent controller on a machine, so the Ops and Repo agents cannot be created"
+        return filled, None
+
+    def run_template(self, gw: Any, project: str, filled: dict[str, str]) -> None:
+        text = (self.workdir / "templates/shipyard.template.yaml").read_text()
+        inputs: dict[str, Any] = {"project": project}
+        machine = self.get("agents.machine", "", "")
+        if machine:
+            inputs["machine"] = machine
+        status, r = gw.call("POST", "/rooms/from-template-document", {"template": text, "inputs": inputs, "filled": filled, "template_name": "shipyard"})
+        if status not in (200, 201) or not isinstance(r, dict):
+            problems = ""
+            if isinstance(r, str) and "problems" in r:
+                try:
+                    problems = "; ".join(f"{p.get('slot')}: {p.get('message')}" for p in json.loads(r).get("problems", []))
+                except ValueError:
+                    problems = r[:200]
+            raise InitError(f"Switch would not run the Shipyard template ({status}): {problems or str(r)[:200]}. "
+                            "For agents it needs an online machine with Codex installed and signed in (`codex login`).")
+        for room in (r.get("room") or {}).get("rooms", []):
+            kind = next((k for k, suf in (("incidents", "-incidents"), ("maintainers", "-maintainers"), ("ops", "-ops")) if room["room_name"].endswith(suf)), None)
+            if kind:
+                self.created[kind].append(room["room_id"])
+                self.room_labels[room["room_id"]] = f"#{room['room_name']}"
+        made = ", ".join(sorted(self.room_labels.values()))
+        self.say(f"  Switch template ran: group '{project}' with {made}; agents: " + (", ".join(f"{n} (existing)" for n in filled.values()) or "created") + "; rooms linked")
+
+    def make_rooms(self, gw: Any, project: str, gk_id: str, existing: list[str]) -> None:
+        if self.use_template:
+            self.run_template(gw, project, self.filled)
+        else:
+            for kind, names in self.to_create.items():
+                for name in names:
+                    status, room = gw.call("POST", "/rooms", {"name": name, "description": f"Shipyard {kind} room", "agent_names": ["gatekeeper"]})
+                    if status not in (200, 201) or not isinstance(room, dict) or "id" not in room:
+                        raise InitError(f"Switch would not create the room {name!r} ({status}): {str(room)[:120]}")
+                    self.created[kind].append(room["id"])
+                    self.room_labels[room["id"]] = f"#{name}"
+                    self.say(f"  created room #{name}")
+        for room in existing:
+            status, _ = gw.call("POST", f"/rooms/{room}/agents", {"agent_ids": [gk_id]})
+            if status not in (200, 201, 204, 409):
+                self.say(f"  warning: could not add the Gatekeeper to room {room} ({status})")
 
     def write_codex_config(self) -> None:
         """The agents' only tools: the Gatekeeper's request tool. No Coolify, GitHub or Switch credential."""
@@ -342,6 +376,9 @@ class Installer:
         gh = self.github(cool[2])
         if dry_run:
             planned = {k: rooms[k] + [f"<new: {n}>" for n in self.to_create[k]] for k in rooms}
+            if self.use_template:
+                planned = {"ops": [f"<new: {project}-ops>"], "maintainers": [f"<new: {project}-maintainers>"], "incidents": [f"<new: {project}-incidents>"]}
+                self.say(f"  would run the Shipyard Switch template (agents already in Switch: {', '.join(self.filled.values()) or 'none, they would be created'})")
             cfg = self.build_config(project, url, env_file, planned, cool, gh, bool(self.a.get("dashboard", True)))
             self.say("dry run: nothing written")
             return cfg
@@ -349,7 +386,8 @@ class Installer:
         self.home.mkdir(parents=True, exist_ok=True)
         if cool[1]:
             _write_secret(self.paths["coolify"], f"COOLIFY_TOKEN={cool[1]}\n")
-        self.register(gw, env, url, rooms["ops"] + rooms["maintainers"])
+        gk_id = self.register(gw, env, url)
+        self.make_rooms(gw, project, gk_id, rooms["ops"] + rooms["maintainers"] + rooms["incidents"])
         rooms = {k: rooms[k] + self.created[k] for k in rooms}
         cfg = self.build_config(project, url, env_file, rooms, cool, gh, bool(self.a.get("dashboard", True)))
         owner = self.get("owner", "Your chat identity (what `@gatekeeper whoami` prints; blank to add it after)", "")
@@ -358,8 +396,7 @@ class Installer:
         self.paths["config"].write_text(yaml.safe_dump(cfg, sort_keys=False))
         os.chmod(self.paths["config"], 0o600)
         load_config(self.paths["config"])                                                  # refuse to go on with a config we cannot read
-        if self.get("agents.create", "Create the Ops and Repo agents in Switch? (yes/no)", "yes").lower() in ("yes", "y", "true"):
-            self.agents(gw)
+        if self.get("agents.create", "Use the Ops and Repo agents (give them the Gatekeeper's tool)? (yes/no)", "yes").lower() in ("yes", "y", "true"):
             self.write_codex_config()
         self.say("5/5 Starting")
         self.service()

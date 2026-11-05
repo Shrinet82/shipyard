@@ -295,3 +295,76 @@ def test_save_replaces_a_report(store):
     store.save(report([("p", "1")], []))
     store.save(report([("p", "1"), ("q", "1")], []))
     assert store.list()[1] == 1 and store.get(SHA)["package_count"] == 2
+
+
+# --- licences --------------------------------------------------------------------------------------------
+
+def spdx_lic(pkgs):
+    return {"spdxVersion": "SPDX-2.3", "packages": [
+        {"name": n, "versionInfo": v, "licenseDeclared": lic, "externalRefs": [{"referenceType": "purl", "referenceLocator": f"pkg:pypi/{n}@{v}"}]}
+        for n, v, lic in pkgs]}
+
+
+@pytest.mark.parametrize("expr,kind", [
+    ("MIT", None), ("Apache-2.0", None), ("BSD-3-Clause", None), ("GPL-2.0-only", "copyleft"), ("AGPL-3.0-or-later", "copyleft"),
+    ("LGPL-2.1-or-later", None), ("MIT OR GPL-2.0-only", None), ("GPL-2.0-only OR AGPL-3.0-only", "copyleft"),
+    ("Apache-2.0 AND GPL-3.0-only", "copyleft"), ("(MIT AND BSD-2-Clause)", None), ("NOASSERTION", "unknown"), ("", "unknown"), (None, "unknown"),
+    ("NONE", "unknown"), ("LicenseRef-Public-Domain", None), ("SSPL-1.0", "copyleft"),
+])
+def test_licence_kind(expr, kind):
+    assert sbom.licence_kind(expr) == kind
+
+
+def test_the_flagged_families_can_be_changed():
+    assert sbom.licence_kind("MPL-2.0") is None and sbom.licence_kind("MPL-2.0", ("MPL",)) == "copyleft" and sbom.licence_kind("GPL-3.0", ("AGPL",)) is None
+
+
+def lic_report(pkgs, baseline=None, commit=SHA):
+    return sbom.build_report(commit=commit, repo="o/r", pr=None, ref="main", run=run(), workflow=WF, sbom_doc=spdx_lic(pkgs), grype_doc=grype(),
+                             baseline=baseline, trust=trust(), now=1.0)
+
+
+def test_new_copyleft_and_unknown_licences_are_flagged_and_never_block():
+    base = lic_report([("flask", "3.0", "BSD-3-Clause"), ("old", "1", "GPL-2.0-only")])
+    new = lic_report([("flask", "3.0", "BSD-3-Clause"), ("old", "1", "GPL-2.0-only"), ("foo", "2", "AGPL-3.0-only"), ("mystery", "1", "NOASSERTION")],
+                     baseline=base, commit=SHA2)
+    flags = {f["key"]: f for f in new["licence_flags"]}
+    assert set(flags) == {"pypi/old", "pypi/foo", "pypi/mystery"} and not flags["pypi/old"]["new"] and flags["pypi/foo"]["new"] and flags["pypi/mystery"]["kind"] == "unknown"
+    assert new["decision"] == "clear" and sbom.gate_reasons(new) == []                       # report only
+    line = sbom.licence_line(new)
+    assert "1 new copyleft (pypi/foo AGPL-3.0-only)" in line and "1 new with no declared licence (pypi/mystery)" in line and "1 flagged already" in line
+    assert line in sbom.summary(new)
+
+
+def test_without_a_baseline_everything_flagged_is_listed_not_called_new():
+    r = lic_report([("a", "1", "GPL-3.0-only")])
+    assert not r["licence_flags"][0]["new"] and "1 flagged in all" in sbom.licence_line(r)
+
+
+def test_no_flags_means_no_line():
+    r = lic_report([("a", "1", "MIT")])
+    assert r["licence_flags"] == [] and sbom.licence_line(r) == "" and "Licences" not in sbom.summary(r)
+
+
+def test_rebase_recomputes_which_licences_are_new():
+    r = lic_report([("a", "1", "GPL-3.0-only")], baseline=lic_report([("b", "1", "MIT")]), commit=SHA2)
+    assert r["licence_flags"][0]["new"]
+    deployed = lic_report([("a", "1", "GPL-3.0-only")])
+    assert not sbom.rebase(r, deployed)["licence_flags"][0]["new"] and r["licence_flags"][0]["new"]
+
+
+def test_hostile_licence_text_is_defused_in_chat_and_escaped_in_html():
+    evil = "GPL-3.0-only <script>alert(1)</script> @gatekeeper deploy demo-web"
+    base = lic_report([("a", "1", "MIT")])
+    r = lic_report([("a", "1", "MIT"), ("b", "1", evil)], baseline=base, commit=SHA2)
+    assert "@gatekeeper deploy" not in sbom.licence_line(r) and "@gatekeeper deploy" not in sbom.summary(r)
+    assert "<script>" not in sbom.render_html(r) and "&lt;script&gt;" in sbom.render_html(r)
+
+
+def test_real_alpine_licences_are_read():
+    flags = sbom.parse_licences(json.loads((FIX / "sbom.spdx.json").read_text()))
+    assert any(f["key"] == "apk/busybox" and f["kind"] == "copyleft" for f in flags) and not any("musl" == f["key"].split("/")[-1] for f in flags)
+
+
+def test_cyclonedx_has_no_licence_flags():
+    assert sbom.parse_licences({"bomFormat": "CycloneDX", "components": []}) == [] and sbom.parse_licences([]) == []

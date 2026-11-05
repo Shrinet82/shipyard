@@ -222,6 +222,13 @@ class GitHubApp:
     def branch_head(self, repo: str, branch: str) -> str:
         return self._call("GET", f"/repos/{repo}/branches/{branch}")["commit"]["sha"]
 
+    def tag_commit(self, repo: str, tag: str) -> str:
+        """The commit a tag points at (annotated tags are followed one step)."""
+        obj = self._call("GET", f"/repos/{repo}/git/ref/tags/{tag}")["object"]
+        if obj.get("type") == "tag":
+            obj = self._call("GET", f"/repos/{repo}/git/tags/{obj['sha']}")["object"]
+        return str(obj["sha"])
+
     def rate_limit(self) -> dict[str, Any]:
         return self._call("GET", "/rate_limit")["resources"]["core"]
 

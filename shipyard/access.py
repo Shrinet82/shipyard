@@ -128,6 +128,30 @@ class AgentAccess:
                     rooms |= set(rule["rooms"])
         return users, rooms
 
+    def rooms(self, project: Project) -> list[dict[str, Any]]:
+        """The project's rooms as Switch sees them: which chat app, which group, which agents are in them."""
+        gw = self.gateway()
+        rows = {r["id"]: r for r in self._get(gw, "/rooms") if r.get("id") in project.rooms}
+        agents = self._get(gw, "/agents")
+        names = {a["id"]: a["name"] for a in (agents if isinstance(agents, list) else agents.get("agents", []))}
+        out = []
+        for rid in sorted(project.rooms):
+            r = rows.get(rid)
+            if r is None:
+                out.append({"id": rid, "name": project.room_names.get(rid, rid[:8]), "kind": self._kind(project, rid), "missing": True})
+                continue
+            status, detail = gw.call("GET", f"/rooms/{rid}")
+            ids = (detail or {}).get("agent_ids", []) if status == 200 and isinstance(detail, dict) else []
+            url = r.get("external_channel_url")
+            out.append({"id": rid, "name": r["name"], "kind": self._kind(project, rid), "bridge": r.get("bridge_display_name") or "",
+                        "group": r.get("group_name") or "", "agents": sorted(names.get(i, "?") for i in ids), "users": r.get("connected_user_count", 0),
+                        "alerts": rid in project.alert_rooms, "url": url if isinstance(url, str) and url.startswith("https://") else None, "missing": False})
+        return out
+
+    @staticmethod
+    def _kind(project: Project, rid: str) -> str:
+        return "incidents" if rid in project.incident_rooms else "maintainers" if rid in project.maintainer_rooms else "ops"
+
     # -- for the page ---------------------------------------------------------------------
 
     def _synced(self) -> dict[str, tuple[float, str]]:

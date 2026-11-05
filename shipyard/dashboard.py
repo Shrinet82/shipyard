@@ -158,7 +158,7 @@ class Dashboard:
         simple = {
             "GET /api/me": self._me, "POST /api/logout": self._logout, "GET /api/overview": self._overview,
             "GET /api/approvals": self._approvals, "GET /api/backends": self._backends, "GET /api/roles": self._roles,
-            "GET /api/agents": self._agents,
+            "GET /api/agents": self._agents, "GET /api/rooms": self._rooms_page,
         }
         if route in simple:
             return simple[route](ctx)
@@ -306,7 +306,7 @@ class Dashboard:
             "baseline": report["baseline"], "collected_at": report["collected_at"], "pending_approval": pending,
             "diff": {"added": d["added"][:300], "removed": d["removed"][:300], "upgraded": d["upgraded"][:300],
                      "total": len(d["added"]) + len(d["removed"]) + len(d["upgraded"])},
-            "findings": findings[:300], "findings_total": len(findings),
+            "findings": findings[:300], "findings_total": len(findings), "licence_flags": report.get("licence_flags", [])[:200],
             "trust": report["trust"], "workflow": report["workflow"], "run_id": report.get("run_id"),
             "links": {"run": f"{self.gh_url}/{repo}/actions/runs/{report['run_id']}" if report.get("run_id") else None,
                       "commit": f"{self.gh_url}/{repo}/commit/{report['commit']}",
@@ -352,6 +352,11 @@ class Dashboard:
             if d["to"] is None:
                 self.auth.revoke_identity(d["identity"])           # a removed member's sessions end now
         return _json({"changed": done, "audited": len(done)})
+
+    def _rooms_page(self, c) -> Resp:
+        if self.access is None:
+            return _err(404, "Switch is not configured")
+        return _json({"rooms": self.access.rooms(c["project"]), "project": c["project"].name})
 
     def _agents(self, c) -> Resp:
         if self.access is None:

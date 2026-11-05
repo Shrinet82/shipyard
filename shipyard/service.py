@@ -315,23 +315,38 @@ class Service:
         if self.sbom is None or project.repo is None:
             return "SBOM reports are not set up for this project."
         store = self.sbom.store
+        repo = project.repo
+        label: str | None = None
         try:
             if not cmd.args:
                 report = store.latest()
             elif target.isdigit():
                 report = store.latest(pr=int(target))
                 if report is None and self.github is not None:
-                    pr = self.github.pr(project.repo.name, int(target))
+                    pr = self.github.pr(repo.name, int(target))
                     report = self.sbom.collect(project, pr.head_sha, pr.number, f"PR #{pr.number}")
+            elif target.lower() == "live" or target in project.apps:
+                app = repo.app if target.lower() == "live" else target
+                rel = store.last_release(project.name, app) if app else None
+                report = (store.get(rel["report_commit"]) or store.get(rel["commit"])) if rel else None
+                label = f"{app}, the release that is live"
+                if rel is None:
+                    return f"No release of {app or 'the repository app'} has been deployed through the Gatekeeper yet."
             else:
                 full = store.resolve(target.lower())
                 report = store.get(full) if full else None
+                if report is None and self.github is not None and not re.fullmatch(r"[0-9a-f]{7,40}", target.lower()):
+                    commit = self.github.tag_commit(repo.name, target)           # a release tag
+                    report = store.get(commit) or self.sbom.collect(project, commit, None, f"release {target}")
+                    label = f"release {target}"
         except GitHubError as exc:
-            return f"There is no pull request #{target}." if "404" in str(exc) else f"Could not reach GitHub: {exc}"
+            if "404" in str(exc):
+                return f"There is no pull request, release or tag called {target}."
+            return f"Could not reach GitHub: {exc}"
         if report is None:
             return "No SBOM report is stored for that yet. CI produces one when it finishes."
-        label = f"PR #{report['pr']}" if report.get("pr") else report.get("ref") or None
-        return sbom_summary(rebase(report, store.baseline(project.name, project.repo.app)), label)
+        label = label or (f"PR #{report['pr']}" if report.get("pr") else report.get("ref") or None)
+        return sbom_summary(rebase(report, store.baseline(project.name, repo.app)), label)
 
     def _merge_blockers(self, project: Project, number: int):
         """(pr, reason). A reason means: do not merge. Used when asked, and again after approval."""
@@ -375,6 +390,7 @@ class Service:
             return self._deny(project, sender, "repo.merge", target, reason, name=self._name(sender))
         args: dict[str, Any] = {"sha": pr.head_sha}
         gated: list[str] = []
+        report = None
         if project.repo.app and self._gated_app(project, project.repo.app):
             try:
                 gated, report = self._gate(project, pr.head_sha, pr.number, f"PR #{pr.number}")
@@ -388,8 +404,11 @@ class Service:
                                      args=args, room_id=room, name=self._name(sender), force_approval=bool(gated))
         if out.status == "denied":
             return f"Denied: {out.reason}."
+        plan = sbom_summary(report, f"PR #{pr.number}") if report else ""
+        if out.status == "awaiting_approval" and project.repo.app:
+            self._plan_to_ops(project, room, out.approval_id, f"merging PR #{pr.number} will deploy {project.repo.app}", plan or "SBOM: none collected for this commit.")
         return self._prompt(out.approval_id, "repo.merge", target, args, self._name(sender),
-                            extra=f" ({pr.title!r}, CI green, head {pr.head_sha[:7]})", gate=gated)
+                            extra=f" ({pr.title!r}, CI green, head {pr.head_sha[:7]})", gate=gated, sbom=plan)
 
     def _run_merge(self, project: Project, actor: str, number: int, sha: str, approved_by: str | None,
                    gate_ids: list[str] | None = None) -> str:
@@ -528,8 +547,16 @@ class Service:
             return self._prompt(out.approval_id, action, target, args, self._name(sender))
         return self._run(project, sender, action, target, args)
 
+    def _room_label(self, project: Project, room: str) -> str:
+        return project.room_names.get(room) or "the room where it was asked"
+
+    def _plan_to_ops(self, project: Project, room: str, approval_id: str | None, what: str, summary_text: str) -> None:
+        """A merge asked in the maintainers room will deploy: tell the ops rooms, with the SBOM report, so the people who watch deploys see the plan."""
+        for ops in sorted(project.ops_rooms - {room}):
+            self.post(ops, f"Deploy plan: {what}. Waiting for approval `{approval_id}` in {self._room_label(project, room)}.\n{summary_text}")
+
     def _prompt(self, approval_id: str | None, action: str, target: str, args: dict, who: str, agent: str | None = None,
-                extra: str = "", gate: list[str] | None = None) -> str:
+                extra: str = "", gate: list[str] | None = None, sbom: str = "") -> str:
         minutes = self.cfg.policy.approval_timeout_seconds // 60
         verb = action.split(".", 1)[1]
         what = f"{verb} {'PR #' if verb == 'merge' else ''}{target}" + (f" {args['tag']}" if args.get("tag") else "")
@@ -541,9 +568,11 @@ class Service:
         by = f"{agent} proposes, for {who}" if agent else f"requested by {who}"
         if gate:
             return (f"BLOCKED by the SBOM gate (id {approval_id}): {what}, {by}. {_t(gate[0], 300)}. Only an owner can override: "
-                    f"`@gatekeeper approve {approval_id}`. `@gatekeeper deny {approval_id}` cancels. It expires in {minutes} minutes.")
+                    f"`@gatekeeper approve {approval_id}`. `@gatekeeper deny {approval_id}` cancels. It expires in {minutes} minutes."
+                    + (f"\n{sbom}" if sbom else ""))
         return (f"Approval needed (id {approval_id}): {what}, {by}. An owner, or another maintainer, can reply "
-                f"`@gatekeeper approve {approval_id}`. `@gatekeeper deny {approval_id}` cancels. It expires in {minutes} minutes.")
+                f"`@gatekeeper approve {approval_id}`. `@gatekeeper deny {approval_id}` cancels. It expires in {minutes} minutes."
+                + (f"\n{sbom}" if sbom else ""))
 
     def _approval_reply(self, project: Project, room: str, sender: str, cmd: Command) -> str:
         approval_id = cmd.args[0].lower()
@@ -729,7 +758,7 @@ class Service:
                 f"You cannot change anything; people decide, e.g. `@gatekeeper rollback {app}`.")
         self.gk.audit.write(project=project.name, actor="coolify", event="alert", action=event, target=app,
                             deployment=str(payload.get("deployment_uuid", "")))
-        for room in sorted(project.ops_rooms):
+        for room in sorted(project.alert_rooms):
             self.post(room, text)
 
     # -- housekeeping ---------------------------------------------------------

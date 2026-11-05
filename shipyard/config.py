@@ -55,10 +55,16 @@ class Project:
     github_logins: dict[str, str] = field(default_factory=dict)   # sender id -> GitHub login
     k8s_apps: dict[str, K8sApp] = field(default_factory=dict)     # app name -> Kubernetes deployment
     room_names: dict[str, str] = field(default_factory=dict)      # room id -> label for people, e.g. "#demo-ops"
+    incident_rooms: frozenset[str] = frozenset()                  # where alerts and diagnosis go; commands work here too
 
     @property
     def rooms(self) -> frozenset[str]:
-        return self.ops_rooms | self.maintainer_rooms
+        return self.ops_rooms | self.maintainer_rooms | self.incident_rooms
+
+    @property
+    def alert_rooms(self) -> frozenset[str]:
+        """Alerts go to the incidents room when there is one, else to the ops rooms."""
+        return self.incident_rooms or self.ops_rooms
 
     @property
     def app_names(self) -> list[str]:
@@ -83,6 +89,7 @@ class SbomCfg:
     data_dir: str = "~/shipyard-sbom"
     poll_seconds: int = 90
     enabled: bool = True
+    copyleft: tuple[str, ...] = ("AGPL", "GPL", "SSPL", "EUPL", "OSL", "CC-BY-SA")   # licence families to flag (report only, never a block)
 
 
 @dataclass(frozen=True)
@@ -175,12 +182,13 @@ def load_policy(path: str | Path) -> Policy:
     return _policy(yaml.safe_load(Path(path).read_text()))
 
 
-def _rooms(value: Any) -> tuple[frozenset[str], frozenset[str]]:
-    """`rooms: [a, b]` means ops rooms; `rooms: {ops: [...], maintainers: [...]}` names both."""
+def _rooms(value: Any) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """`rooms: [a, b]` means ops rooms; `rooms: {ops: [...], maintainers: [...], incidents: [...]}` names them."""
     if isinstance(value, dict):
         return (frozenset(str(r) for r in value.get("ops") or []),
-                frozenset(str(r) for r in value.get("maintainers") or []))
-    return frozenset(str(r) for r in value or []), frozenset()
+                frozenset(str(r) for r in value.get("maintainers") or []),
+                frozenset(str(r) for r in value.get("incidents") or []))
+    return frozenset(str(r) for r in value or []), frozenset(), frozenset()
 
 
 def load_config(path: str | Path) -> Config:
@@ -199,7 +207,7 @@ def load_config(path: str | Path) -> Config:
                 apps[app] = str(v["uuid"])
             else:
                 apps[app] = str(v)
-        ops, maint = _rooms(spec.get("rooms"))
+        ops, maint, incidents = _rooms(spec.get("rooms"))
         repo = None
         if spec.get("repo"):
             r = spec["repo"]
@@ -212,13 +220,13 @@ def load_config(path: str | Path) -> Config:
                 raise ValueError("merge_method must be merge, squash or rebase")
         projects[name] = Project(name, ops, maint, apps, repo,
                                  {str(k): str(v) for k, v in (spec.get("github_logins") or {}).items()}, k8s_apps,
-                                 {str(k): str(v)[:60] for k, v in (spec.get("room_names") or {}).items()})
+                                 {str(k): str(v)[:60] for k, v in (spec.get("room_names") or {}).items()}, incidents)
     rooms = [r for p in projects.values() for r in p.rooms]
     if len(rooms) != len(set(rooms)):
         raise ValueError("a room may belong to only one project")
     for p in projects.values():
-        if p.ops_rooms & p.maintainer_rooms:
-            raise ValueError("a room cannot be both an ops room and a maintainers room")
+        if (p.ops_rooms & p.maintainer_rooms) or (p.incident_rooms & (p.ops_rooms | p.maintainer_rooms)):
+            raise ValueError("a room cannot have two kinds (ops, maintainers, incidents)")
     hosts = {str(n): HostCfg(str(h["ssh"]), str(h["key_file"]), int(h.get("port", 22))) for n, h in (raw.get("hosts") or {}).items()}
     k = raw.get("kubernetes")
     kube = KubeCfg({str(r): str(f) for r, f in (k.get("kubeconfigs") or {}).items()}, str(k.get("kubectl", "kubectl")),
@@ -250,7 +258,8 @@ def load_config(path: str | Path) -> Config:
                         int(al.get("port", 8766)), int(al.get("evidence_lines", 40)), al.get("agent", "ops-agent")),
         digest=DigestCfg(int(dg.get("hour", 9)), int(dg.get("minute", 0)), dg.get("timezone", "Asia/Kolkata")),
         sbom=SbomCfg(str(sb.get("workflow", ".github/workflows/ci.yml")), sb.get("data_dir", "~/shipyard-sbom"),
-                     int(sb.get("poll_seconds", 90)), bool(sb.get("enabled", True))),
+                     int(sb.get("poll_seconds", 90)), bool(sb.get("enabled", True)),
+                     tuple(str(c) for c in sb.get("copyleft", ["AGPL", "GPL", "SSPL", "EUPL", "OSL", "CC-BY-SA"]))),
         dashboard=DashboardCfg(str(dash.get("bind", "127.0.0.1")), int(dash.get("port", 8780)),
                                float(dash.get("session_hours", 8)), dash.get("members_file", "~/shipyard-members.json")),
         hosts=hosts,

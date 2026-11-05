@@ -113,6 +113,52 @@ def parse_sbom(doc: Any) -> tuple[str, dict[str, list[str]]]:
     raise SbomError("the SBOM is neither SPDX nor CycloneDX JSON")
 
 
+# --- licences ---------------------------------------------------------------------------
+
+DEFAULT_COPYLEFT = ("AGPL", "GPL", "SSPL", "EUPL", "OSL", "CC-BY-SA")
+_UNKNOWN = {"", "NOASSERTION", "NONE"}
+_SPLIT = re.compile(r"[()\s]+")
+
+
+def _alternatives(expr: str) -> list[list[str]]:
+    """An SPDX expression as OR-alternatives, each a list of licence ids ("MIT OR GPL-2.0 AND X" -> [[MIT], [GPL-2.0, X]])."""
+    out = []
+    for alt in re.split(r"\bOR\b", expr):
+        ids = [t for t in _SPLIT.split(alt) if t and t not in ("AND", "WITH") and not t.startswith("LicenseRef")]
+        out.append(ids)
+    return out
+
+
+def licence_kind(expr: str | None, copyleft: tuple[str, ...] = DEFAULT_COPYLEFT) -> str | None:
+    """"copyleft" when every way of taking the licence is copyleft (a dual MIT-or-GPL package can be taken as MIT), "unknown" when none
+    is declared, else None. LGPL is weaker than GPL and is not flagged by the default list."""
+    text = (expr or "").strip()
+    if text.upper() in _UNKNOWN:
+        return "unknown"
+    alts = _alternatives(text)
+    if alts and all(any(any(tok.upper().startswith(c.upper()) for c in copyleft) for tok in alt) for alt in alts):   # an empty alternative has no copyleft id
+        return "copyleft"
+    return None
+
+
+def parse_licences(doc: Any, copyleft: tuple[str, ...] = DEFAULT_COPYLEFT) -> list[dict[str, Any]]:
+    """The packages of an SPDX document whose licence is copyleft or unknown: {key, version, license, kind}. CycloneDX gives none."""
+    if not isinstance(doc, dict) or not str(doc.get("spdxVersion", "")).startswith("SPDX-"):
+        return []
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for i, p in enumerate(doc.get("packages") or []):
+        if i >= MAX_PACKAGES:
+            break
+        purl = next((r.get("referenceLocator") for r in p.get("externalRefs", []) if r.get("referenceType") == "purl"), None)
+        pk = purl_key(purl)
+        key, ver = pk if pk else (f"unknown/{p.get('name', '?')}", str(p.get("versionInfo", "")))
+        lic = str(p.get("licenseDeclared") if p.get("licenseDeclared") not in (None, "NOASSERTION") else p.get("licenseConcluded") or "NOASSERTION")[:200]
+        kind = licence_kind(lic, copyleft)
+        if kind:
+            out[(key, lic)] = {"key": key, "version": ver or str(p.get("versionInfo", "")), "license": lic, "kind": kind, "new": False}
+    return sorted(out.values(), key=lambda e: (e["kind"], e["key"]))
+
+
 # --- findings ---------------------------------------------------------------------------
 
 def parse_grype(doc: Any) -> list[dict[str, Any]]:
@@ -169,10 +215,19 @@ def evaluate_trust(*, run: dict[str, Any] | None, repo: str, sha: str, workflow:
     return {"ok": not reasons, "reasons": reasons}
 
 
+def _mark_new_licences(flags: list[dict[str, Any]], baseline: dict[str, Any] | None) -> None:
+    known = {(f["key"], f["license"]) for f in (baseline or {}).get("licence_flags", [])}
+    for f in flags:
+        f["new"] = baseline is not None and (f["key"], f["license"]) not in known
+
+
 def build_report(*, commit: str, repo: str, pr: int | None, ref: str, run: dict[str, Any] | None, workflow: str,
-                 sbom_doc: Any, grype_doc: Any, baseline: dict[str, Any] | None, trust: dict[str, Any], now: float) -> dict[str, Any]:
+                 sbom_doc: Any, grype_doc: Any, baseline: dict[str, Any] | None, trust: dict[str, Any], now: float,
+                 copyleft: tuple[str, ...] = DEFAULT_COPYLEFT) -> dict[str, Any]:
     fmt, packages = parse_sbom(sbom_doc)
     findings = parse_grype(grype_doc)
+    licence_flags = parse_licences(sbom_doc, copyleft)
+    _mark_new_licences(licence_flags, baseline)
     known = {(f["id"], f["key"]) for f in (baseline or {}).get("findings", [])}
     for f in findings:
         f["new"] = (f["id"], f["key"]) not in known
@@ -185,7 +240,7 @@ def build_report(*, commit: str, repo: str, pr: int | None, ref: str, run: dict[
         "fixable": sum(1 for f in findings if f["fixed"]),
         "baseline": (baseline or {}).get("commit"),
         "diff": diff_packages((baseline or {}).get("packages"), packages),
-        "trust": trust, "blocking": blocking, "reasons": list(trust.get("reasons", [])),
+        "trust": trust, "blocking": blocking, "reasons": list(trust.get("reasons", [])), "licence_flags": licence_flags,
     }
     report["decision"] = "unverified" if not trust["ok"] else "blocked" if blocking else "clear"
     return report
@@ -199,7 +254,9 @@ def rebase(report: dict[str, Any], baseline: dict[str, Any] | None) -> dict[str,
     for f in findings:
         f["new"] = (f["id"], f["key"]) not in known
     blocking = [f for f in findings if f["severity"] == "critical" and f["new"]]
-    out.update(findings=findings, blocking=blocking, baseline=(baseline or {}).get("commit"),
+    flags = [dict(f) for f in report.get("licence_flags", [])]
+    _mark_new_licences(flags, baseline)
+    out.update(findings=findings, blocking=blocking, baseline=(baseline or {}).get("commit"), licence_flags=flags,
                diff=diff_packages((baseline or {}).get("packages"), report["packages"]))
     trust = report.get("trust") or {"ok": False, "reasons": ["no trust record"]}
     out["decision"] = "unverified" if not trust["ok"] else "blocked" if blocking else "clear"
@@ -226,6 +283,23 @@ def _t(text: Any, limit: int = 90) -> str:
     return defuse(redact(str(text)))[:limit]
 
 
+def licence_line(report: dict[str, Any]) -> str:
+    """One line for chat, empty when nothing is flagged. Report only: licences never block a deploy."""
+    flags = report.get("licence_flags") or []
+    if not flags:
+        return ""
+    new = [f for f in flags if f["new"]]
+    parts = []
+    for kind, word in (("copyleft", "copyleft"), ("unknown", "with no declared licence")):
+        hit = [f for f in new if f["kind"] == kind]
+        if hit:
+            sample = ", ".join(f"{_t(f['key'], 40)} {_t(f['license'], 24)}" if kind == "copyleft" else _t(f["key"], 40) for f in hit[:3])
+            parts.append(f"{len(hit)} new {word} ({sample}{', …' if len(hit) > 3 else ''})")
+    old = len(flags) - len(new)
+    text = "Licences: " + ("; ".join(parts) if parts else "no new flags")
+    return text + (f"; {old} flagged already in the last release." if old and report.get("baseline") else f"; {len(flags)} flagged in all." if not report.get("baseline") else ".")
+
+
 def summary(report: dict[str, Any], label: str | None = None) -> str:
     """A short Markdown summary for chat."""
     c, d = report["counts"], report["diff"]
@@ -239,6 +313,7 @@ def summary(report: dict[str, Any], label: str | None = None) -> str:
     new_crit = len(report["blocking"])
     sev = (f"CVEs: {c['critical']} critical" + (f" ({new_crit} new)" if new_crit else "") + f", {c['high']} high, "
            f"{c['medium']} medium, {c['low']} low; {report['fixable']} have a fixed version available.")
+    lic = licence_line(report)
     decision = report.get("decision", "clear")
     why = gate_reasons(report)
     if decision == "blocked":
@@ -249,7 +324,7 @@ def summary(report: dict[str, Any], label: str | None = None) -> str:
         tail = "Decision: deploy blocked, no SBOM. " + _t(why[0], 300)
     else:
         tail = "Decision: clear to deploy."
-    return "\n".join([head, sev, tail])
+    return "\n".join([head, sev, *([lic] if lic else []), tail])
 
 
 def render_html(report: dict[str, Any]) -> str:
@@ -265,6 +340,8 @@ def render_html(report: dict[str, Any]) -> str:
                [f"<li class='rem'>− {e(k)} {e(v)}</li>" for k, v in d["removed"][:200]] +
                [f"<li class='up'>↑ {e(k)} {e(a)} → {e(b)}</li>" for k, a, b in d["upgraded"][:200]])
     trust = "".join(f"<li>{e(r)}</li>" for r in report["reasons"]) or "<li>All trust checks passed.</li>"
+    lic_items = "".join(f"<li>{e(f['kind'])}{' · new' if f['new'] else ''}: {e(f['key'])} {e(f['version'])} ({e(f['license'])})</li>"
+                        for f in (report.get("licence_flags") or [])[:200]) or "<li>None.</li>"
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>SBOM {e(report['commit'][:7])}</title>
 <style>body{{font:14px/1.5 system-ui,sans-serif;margin:32px;color:#111827;max-width:1000px}}h1{{font-size:22px}}
 .tiles span{{display:inline-block;margin:0 14px 8px 0;padding:8px 12px;border:1px solid #E2E5EA;border-radius:8px}}
@@ -276,6 +353,7 @@ code{{font-family:ui-monospace,monospace}}</style></head><body>
 <div class="tiles"><span>Critical <b>{c['critical']}</b></span><span>High <b>{c['high']}</b></span><span>Medium <b>{c['medium']}</b></span><span>Low <b>{c['low']}</b></span></div>
 <h2>Where this came from</h2><ul>{trust}</ul>
 <h2>Changes since the last release</h2><ul>{''.join(changes) or '<li>None.</li>'}</ul>
+<h2>Licences flagged</h2><ul>{lic_items}</ul>
 <h2>Vulnerabilities (from the CI scan report)</h2>
 <table><tr><th>Id</th><th>Severity</th><th>Package</th><th>Installed</th><th>Fixed in</th></tr>{rows}</table>
 <p>Severities are the scanner's, as CI produced them.</p></body></html>"""

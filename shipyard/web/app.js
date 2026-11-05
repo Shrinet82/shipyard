@@ -19,6 +19,7 @@ const ICONS = {
   alert: ['circle:12,12,9', 'M12 8v5M12 16h.01'],
   x: ['M6 6l12 12M18 6L6 18'],
   lock: ['rect:5,11,14,10', 'M8 11V8a4 4 0 0 1 8 0v3'],
+  rooms: ['M4 5h16v10H9l-5 4z', 'M8 9h8M8 12h5'],
 };
 function icon(name, size = 18) {
   const s = document.createElementNS(SVG_NS, 'svg');
@@ -190,7 +191,7 @@ function Gate(message) {
 
 // ---- chrome --------------------------------------------------------------------------------------------------------
 const NAV = [['overview', 'Overview', 'overview'], ['audit', 'Audit log', 'audit'], ['approvals', 'Approvals', 'approvals'],
-  ['sbom', 'SBOM reports', 'sbom'], ['backends', 'Backends', 'backends']];
+  ['sbom', 'SBOM reports', 'sbom'], ['rooms', 'Switch rooms', 'rooms'], ['backends', 'Backends', 'backends']];
 const OWNER_NAV = [['roles', 'Roles', 'roles'], ['agents', 'Agent access', 'key']];
 let chainBadge = null;
 function setChain(c) {
@@ -396,9 +397,25 @@ async function SbomDetail(into, commit) {
             h('dt', { text: 'Workflow' }), h('dd', { class: 'mono', text: d.workflow }), h('dt', { text: 'Tools' }), h('dd', { text: 'Syft (SBOM), Grype (scan), run in CI' }))),
         h('section', { class: 'card col', 'aria-labelledby': 'dl' }, h('h2', { id: 'dl', text: 'Downloads' }),
           h('div', { class: 'row' }, d.files.map((k) => h('button', { class: 'btn', type: 'button', onclick: () => download(d.commit, k), text: FILE_LABEL[k] || k })))))),
+    (d.licence_flags || []).length ? h('section', { class: 'col', 'aria-labelledby': 'lics' }, h('h2', { id: 'lics', text: 'Licences flagged (report only)' }),
+      table(['Package', 'Version', 'Licence', 'Kind'], d.licence_flags.map((f) => h('tr', null, h('td', null, h('span', { class: 'row' }, mono(f.key, 'small'), f.new ? chip('new', 'new') : null)), h('td', { class: 'mono small', text: f.version }), h('td', { class: 'mono small', text: f.license }), h('td', null, chip(f.kind, f.kind === 'copyleft' ? 'high' : 'low')))))) : null,
     h('section', { class: 'col', 'aria-labelledby': 'cves' }, h('h2', { id: 'cves', text: 'Vulnerabilities (from the CI scan report)' }),
       cve.length ? table(['Id', 'Severity', 'Package', 'Installed', 'Fixed in'], cve) : empty('No vulnerabilities reported', 'The scan found nothing.'),
       d.findings_total > d.findings.length ? h('p', { class: 'small muted', text: 'Showing ' + d.findings.length + ' of ' + d.findings_total + '. Download the scan JSON for all.' }) : null));
+}
+
+async function Rooms(into) {
+  const d = await api('/api/rooms');
+  const KIND = { ops: 'Deploys and commands', incidents: 'Alerts and diagnosis', maintainers: 'Pull requests and SBOM reports' };
+  put(into, h('div', null, h('h1', { text: 'Switch rooms' }), h('p', { class: 'muted', text: 'The rooms of project ' + d.project + ' as Switch has them: the chat app, the group they are linked in, and which agents are in each.' })),
+    d.rooms.length ? h('div', { class: 'agentgrid' }, d.rooms.map((r) => h('article', { class: 'card col' },
+      h('div', { class: 'row between' }, h('h2', { text: '#' + r.name.replace(/^#/, '') }), h('span', { class: 'chip none', text: r.kind })),
+      h('p', { class: 'small muted', text: KIND[r.kind] || '' }),
+      r.missing ? h('p', { class: 'small err', text: 'Switch does not list this room any more.' }) : [
+        h('dl', { class: 'dl small' }, h('dt', { text: 'Chat app' }), h('dd', { text: r.bridge || '—' }), h('dt', { text: 'Group' }), h('dd', { text: r.group || '—' }), h('dt', { text: 'People' }), h('dd', { text: String(r.users) })),
+        h('div', null, h('div', { class: 'small muted', text: 'Agents in the room' }), h('div', { class: 'people' }, r.agents.length ? r.agents.map((a) => h('span', { class: 'person', text: a })) : h('span', { class: 'small muted', text: 'none' }))),
+        r.alerts ? h('div', { class: 'small' }, chip('alerts land here', 'alert')) : null,
+        safeUrl(r.url) ? h('a', { class: 'small', href: r.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open in chat' }) : null]))) : empty('No rooms', 'This project has no rooms configured.'));
 }
 
 async function Backends(into) {
@@ -478,7 +495,7 @@ async function Agents(into) {
 }
 
 // ---- router -------------------------------------------------------------------------------------------------------
-const PAGES = { overview: Overview, audit: Audit, approvals: Approvals, sbom: SbomList, backends: Backends, roles: Roles, agents: Agents };
+const PAGES = { overview: Overview, audit: Audit, approvals: Approvals, sbom: SbomList, rooms: Rooms, backends: Backends, roles: Roles, agents: Agents };
 async function route() {
   if (!S.me) return;
   clearTimers();
