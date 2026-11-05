@@ -1,8 +1,8 @@
 # Shipyard Board: the ticket tracker (backend)
 
 Built from the "Shipyard Board — ticket tracker build spec". Tickets live in the Gatekeeper's SQLite database, are made and moved from chat by
-the Repo Agent, are opened automatically from ops events, and every change is an audit row in the same hash chain. The Board's pages are
-not built yet: the API is, and the screens wait for the design.
+the Repo Agent, are opened automatically from ops events, and every change is an audit row in the same hash chain. The Board's screens are built from the spec's
+description in the dashboard's own style, and will be restyled when the design arrives.
 
 ## What was built
 
@@ -18,7 +18,8 @@ not built yet: the API is, and the screens wait for the design.
 | `my briefing`, `team status`, fixed first-step rule | `shipyard/briefing.py` | done |
 | Daily standup at `tickets.standup_at` | `StandupScheduler` | done |
 | Notifications: assignment, mention, status change, due date | `TicketFlow._tell`, `due_tick` | done |
-| Dashboard API: list, ticket, summary, move, members, Overview "My tickets" data | `shipyard/dashboard.py` | done; no UI yet |
+| Dashboard API: list, ticket, summary, move, members, Overview "My tickets" data | `shipyard/dashboard.py` | done |
+| Screens: Board page (four columns, filters, drag or Move to), ticket page (links, timeline, Open in chat), Overview "My tickets" block, sidebar item with open count | `shipyard/web/app.js`, `app.css` | done; checked live in a browser on desktop, mobile and dark |
 | Audit events (`ticket_created` ... `briefing_served`) | `Tickets._event` | done |
 
 ## How it behaves
@@ -72,8 +73,8 @@ already named; Coolify only sends what is ticked. For a project that owns more t
 
 ## Differences from the spec, and gaps
 
-1. **GitHub webhooks need an open port.** The receiver is built and tested, but GitHub can only reach the Gatekeeper if the build VM's security group admits GitHub's
-   webhook addresses on the Gatekeeper's webhook port. That is an AWS change that needs approval. Until then polling (every 60 s) does the same job.
+1. **GitHub webhooks need an open port.** The receiver works (tested live with real deliveries: a PR linked in about 6 s), but GitHub can only reach it while the build VM's
+   security group admits GitHub's webhook addresses on port 8766. That rule was opened for the test and closed again; polling (every 60 s) is what runs now.
 2. **Switch has no reply threads for agents.** A member without a desk room gets their briefing as a message right under the standup in the maintainers room,
    not inside a thread.
 3. **Desk rooms are made through Switch's room API** (a private room with the member and the owners), not by running a template document, because a template cannot
@@ -83,4 +84,5 @@ already named; Coolify only sends what is ticked. For a project that owns more t
 6. **Two columns were added**: `tickets.deleted_at` (soft delete) and `ticket_links.meta` (a PR's state, CI and merge commit). The unique dedupe index covers open
    tickets only, so a closed alert ticket does not block a new one.
 7. **"Open in chat"** needs the room's link on the ticket page; the ticket already carries its room, and the link is part of the screens.
-8. **Not run on Discord.** The screens (Board page, ticket page, Overview block) wait for the design.
+8. **Not run on Discord.**
+9. **The merge path was run for real** (PR #12 "Fixes SY-5": merge approved in chat, Coolify deployed it, Coolify's own deployment-success webhook arrived, the deployed commit was compared with the merge commit, SY-5 went to done with the deploy linked).
