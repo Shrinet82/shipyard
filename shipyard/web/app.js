@@ -431,10 +431,10 @@ async function Rooms(into) {
     try {
       const p = await api('/api/rooms/preview', { method: 'POST', body: {} });
       if (!p.changes.length) { put(preview, h('div', { class: 'note' }, icon('check'), 'Every chat app already has the full set of rooms.')); return; }
-      put(preview, h('section', { class: 'card col', 'aria-labelledby': 'rv' }, h('div', { class: 'row between' }, h('h2', { id: 'rv', text: 'Preview: ' + p.changes.length + ' thing' + (p.changes.length === 1 ? '' : 's') + ' to create' }),
+      put(preview, h('section', { class: 'card col', 'aria-labelledby': 'rv' }, h('div', { class: 'row between' }, h('h2', { id: 'rv', text: 'Preview: ' + p.changes.length + ' change' + (p.changes.length === 1 ? '' : 's') }),
         h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: () => put(preview), text: 'Cancel' }), h('button', { class: 'btn primary', type: 'button', onclick: make, text: 'Create in Switch' }))),
-        h('div', { class: 'diff' }, p.changes.map((c) => h('div', { class: 'add' }, h('span', { text: c.op }), h('span', { text: c.agent }), h('span', { class: 'small', text: c.text })))),
-        h('p', { class: 'small muted', text: 'Rooms are created in each chat app through Switch, the agents are added, and agent access is synced so they answer there. Nothing is created until you press the button.' })));
+        h('div', { class: 'diff' }, p.changes.map((c) => h('div', { class: c.op === '+' ? 'add' : c.op === '!' ? 'rem' : 'up' }, h('span', { text: c.op === '!' ? '!' : c.op }), h('span', { text: c.agent }), h('span', { class: 'small', text: c.text })))),
+        h('p', { class: 'small muted', text: 'Rooms are created in each chat app through Switch, the agents are added, and agent access is synced so they answer there. A room whose Discord channel is gone is removed from Switch and made again. Nothing happens until you press the button.' })));
     } catch (e) { toast(e.message, true); }
   }
   let busy = false;
@@ -443,7 +443,7 @@ async function Rooms(into) {
     busy = true; if (e && e.target) e.target.disabled = true;
     try {
       const r = await api('/api/rooms/sync', { method: 'POST', body: {} });
-      toast('Created ' + (r.rooms.length + r.desks.length) + ' room' + (r.rooms.length + r.desks.length === 1 ? '' : 's') + (r.agent_access_synced ? '; agent access synced.' : '.') + (r.problems.length ? ' Problems: ' + r.problems.slice(0, 2).join('; ') : ''), r.problems.length > 0);
+      toast((r.removed.length ? 'Removed ' + r.removed.length + ' stale; ' : '') + 'Created ' + (r.rooms.length + r.desks.length) + ' room' + (r.rooms.length + r.desks.length === 1 ? '' : 's') + (r.agent_access_synced ? '; agent access synced.' : '.') + (r.problems.length ? ' Problems: ' + r.problems.slice(0, 2).join('; ') : ''), r.problems.length > 0);
       Rooms(into);
     } catch (err) { busy = false; if (e && e.target) e.target.disabled = false; toast('Sync failed: ' + err.message, true); }
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Manage the Shipyard dev VMs (AWS profile new-account, Mumbai).
-#   scripts/vm.sh status | start | stop | ssh build|coolify [cmd...] | put <local> <remote-path-on-build> | myip | tunnel
+#   scripts/vm.sh status | start | stop | ssh build|coolify [cmd...] | put <local> <remote-path-on-build> | myip | tunnel [mattermost]
 set -euo pipefail
 export AWS_PROFILE=${AWS_PROFILE:-new-account} AWS_REGION=ap-south-1
 KEY=$HOME/.ssh/shipyard-dev
@@ -24,8 +24,11 @@ case "${1:-status}" in
   stop)   aws ec2 stop-instances --instance-ids $(ids) >/dev/null; echo "stopping; disks still bill (~\$0.36/day)"; status ;;
   ssh)    host=$(ip_of "$2"); shift 2; exec ssh ${SSH_TTY:+-t} -i "$KEY" -o StrictHostKeyChecking=accept-new ubuntu@"$host" "$@" ;;
   put)    host=$(ip_of build); exec scp -i "$KEY" -o StrictHostKeyChecking=accept-new "$2" ubuntu@"$host":"$3" ;;
-  tunnel) host=$(ip_of build); echo "dashboard on http://localhost:8780 (Ctrl-C closes the tunnel)"
-          exec ssh -N -i "$KEY" -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes -L 8780:localhost:8780 ubuntu@"$host" ;;
+  tunnel) host=$(ip_of build); extra=()
+          echo "dashboard on http://localhost:8780"
+          if [ "${2:-}" = mattermost ]; then extra=(-L 8065:localhost:8065); echo "Mattermost on http://localhost:8065"; fi
+          echo "(Ctrl-C closes the tunnel)"
+          exec ssh -N -i "$KEY" -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes -L 8780:localhost:8780 "${extra[@]}" ubuntu@"$host" ;;
   myip)   sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$SG_NAME --query 'SecurityGroups[0].GroupId' --output text)
           me=$(curl -s https://checkip.amazonaws.com)/32
           for port in 22 8000; do
@@ -33,5 +36,5 @@ case "${1:-status}" in
             for c in $old; do aws ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr "$c" >/dev/null; done
             aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr "$me" >/dev/null
           done; echo "ports 22 and 8000 now open to $me only" ;;
-  *) echo "usage: $0 status|start|stop|ssh build|coolify [cmd]|put <local> <remote>|myip|tunnel"; exit 2 ;;
+  *) echo "usage: $0 status|start|stop|ssh build|coolify [cmd]|put <local> <remote>|myip|tunnel [mattermost]"; exit 2 ;;
 esac

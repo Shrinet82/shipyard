@@ -20,7 +20,8 @@ class World:
 
     def __init__(self):
         self.rooms = [{"id": r, "name": n, "bridge_id": BRIDGE, "bridge_type": "mattermost", "group_id": None} for r, n in ((OPS, "demo-ops"), (MAINT, "demo-maintainers"), (INC, "demo-incidents"))]
-        self.rooms += [{"id": D_OPS, "name": "ops-base", "bridge_id": DISCORD, "bridge_type": "discord", "group_id": "g-d"}, {"id": D_PRS, "name": "demo-prs", "bridge_id": DISCORD, "bridge_type": "discord", "group_id": "g-d"}]
+        self.rooms += [{"id": D_OPS, "name": "ops-base", "bridge_id": DISCORD, "bridge_type": "discord", "group_id": "g-d", "external_channel_url": "https://discord.com/channels/77777/1001"},
+                       {"id": D_PRS, "name": "demo-prs", "bridge_id": DISCORD, "bridge_type": "discord", "group_id": "g-d", "external_channel_url": "https://discord.com/channels/77777/1002"}]
         self.apps = [{"bridge_id": BRIDGE, "bridge_type": "mattermost", "display_name": "Mattermost"}, {"bridge_id": DISCORD, "bridge_type": "discord", "display_name": "ShipYard"}]
         self.agents = [{"id": "a-ops", "name": "ops-agent"}, {"id": "a-repo", "name": "repo-agent"}, {"id": "a-gk", "name": "gatekeeper"}]
         self.calls, self.fail, self.n = [], False, 0
@@ -43,11 +44,40 @@ class World:
                 return 400, {"detail": "Creating a new bridge channel requires channel_type ('channel_public', 'channel_private', ...)"}
             self.n += 1
             room = {"id": f"new-{self.n}", "name": body["name"], "bridge_id": body["bridge_id"], "bridge_type": "x", "group_id": body.get("group_id")}
+            if body["bridge_id"] == DISCORD:
+                room["external_channel_url"] = f"https://discord.com/channels/77777/{body.get('external_channel_id') or 5000 + self.n}"
             self.rooms.append(room)
             return 201, {"id": room["id"]}
+        if method == "DELETE" and path.startswith("/rooms/"):
+            self.rooms = [r for r in self.rooms if r["id"] != path.rsplit("/", 1)[1]]
+            return 200, {"ok": True, "channel": None}
         if method == "POST" and path.endswith("/agents"):
             return 200, {}
         return 404, "?"
+
+
+class FakeDiscord:
+    """The server: the channels of every room Switch made on Discord, plus some of its own, minus the ones the test deletes."""
+
+    def __init__(self, world, names=None):
+        self.world = world
+        self.extra = {"1003": "general"}
+        self.extra.update(names or {})
+        self.hidden, self.fail, self.empty = set(), False, False
+
+    @property
+    def chans(self):                                  # tests add or remove channels here
+        return self.extra
+
+    def channels(self, guild):
+        assert guild == "77777"
+        if self.fail:
+            raise RuntimeError("Discord is unreachable")
+        if self.empty:
+            return []
+        out = {r["external_channel_url"].rsplit("/", 1)[1]: r["name"] for r in self.world.rooms if r.get("external_channel_url")}
+        out.update(self.extra)
+        return [{"id": i, "name": n, "type": 0} for i, n in out.items() if i not in self.hidden]
 
 
 @pytest.fixture
@@ -61,7 +91,8 @@ def sync(env, tmp_path):  # noqa: F811
     from shipyard.desks import Desks
     env.svc.desks = Desks(env.cfg, tmp_path / "desks2.json", env.gk.audit, lambda: w)
     env.rooms_file = tmp_path / "rooms.json"
-    env.rs = RoomSync(env.cfg, env.rooms_file, env.gk.audit, lambda: w, env.svc.desks, lambda project, actor: env.synced.append((project.name, actor)))
+    env.discord = FakeDiscord(w)
+    env.rs = RoomSync(env.cfg, env.rooms_file, env.gk.audit, lambda: w, env.svc.desks, lambda project, actor: env.synced.append((project.name, actor)), env.discord)
     env.svc.roomsync = env.rs
     return env
 
@@ -204,3 +235,84 @@ def test_a_refused_room_is_logged_and_audited(sync):
     sync.world.fail = True
     sync.rs.apply(sync.cfg.projects["demo"], OWNER)
     assert any(r["event"] == "failed" and r["action"] == "rooms.sync" for r in sync.gk.audit.recent("demo", 50))
+
+
+# --- the server's real channel list (read only) -------------------------------------------------------------------------------------
+
+def _made(sync):
+    """Sync once, as the live system did, then say that Discord still shows only the old channels plus whatever the test adds."""
+    sync.rs.apply(sync.cfg.projects["demo"], OWNER)
+    rooms = {r["id"]: r for r in sync.world.rooms}
+    return rooms
+
+
+def test_rooms_whose_channel_was_deleted_in_discord_are_found_removed_and_made_again(sync):
+    rooms = _made(sync)
+    inc_id = next(i for i in sync.cfg.projects["demo"].incident_rooms if i.startswith("new-"))
+    desk_id = sync.cfg.desks["demo"][DREW]
+    chan = lambda rid: rooms[rid]["external_channel_url"].rsplit("/", 1)[1]  # noqa: E731
+    assert sync.rs.stale(sync.cfg.projects["demo"], sync.rs._world(sync.world)) == []                          # both channels exist: nothing is stale
+    sync.discord.hidden |= {chan(inc_id), chan(desk_id)}                                                       # the user deletes them in Discord
+    changes = sync.rs.preview(sync.cfg.projects["demo"])
+    assert [c["op"] for c in changes[:2]] == ["~", "~"] and "gone from Discord" in changes[0]["text"]
+    assert any(c["op"] == "+" and "demo-incidents" in c["text"] for c in changes) and any(c["agent"] == "desks" for c in changes)
+    out = sync.rs.apply(sync.cfg.projects["demo"], OWNER)
+    assert sorted(out["removed"]) == ["#demo-desk-drew", "#demo-incidents"] and out["rooms"] == ["#demo-incidents (ShipYard)"] and "demo-desk-drew" in out["desks"]
+    assert ("DELETE", f"/rooms/{inc_id}", None) in sync.world.calls and ("DELETE", f"/rooms/{desk_id}", None) in sync.world.calls
+    assert inc_id not in sync.cfg.projects["demo"].incident_rooms and sync.cfg.desks["demo"][DREW] != desk_id
+    assert [r["event"] for r in sync.gk.audit.recent("demo", 50)].count("executed") >= 3 and sync.gk.audit.verify()
+
+
+def test_a_room_from_the_config_file_that_lost_its_channel_is_reported_not_touched(sync):
+    sync.discord.hidden.add("1001")                                                                            # ops-base is gone from Discord
+    changes = sync.rs.preview(sync.cfg.projects["demo"])
+    assert changes[0]["op"] == "!" and "ops-base" in changes[0]["text"] and "not touched" in changes[0]["text"]
+    sync.rs.apply(sync.cfg.projects["demo"], OWNER)
+    assert not [c for c in sync.world.calls if c[0] == "DELETE"] and D_OPS in sync.cfg.projects["demo"].ops_rooms
+
+
+def test_a_channel_that_is_already_there_is_linked_not_duplicated(sync):
+    sync.discord.chans["2222"] = "demo-incidents"
+    plan = sync.rs.plan(sync.cfg.projects["demo"])
+    assert plan[0]["op"] == "link" and plan[0]["channel_id"] == "2222"
+    sync.rs.apply(sync.cfg.projects["demo"], OWNER)
+    post = next(c[2] for c in sync.world.calls if c[:2] == ("POST", "/rooms") and c[2]["name"] == "demo-incidents")
+    assert post["external_channel_id"] == "2222" and "channel_type" not in post
+
+
+def test_a_desk_channel_that_is_already_there_is_linked(sync):
+    sync.discord.chans["3333"] = "demo-desk-drew"
+    sync.rs.apply(sync.cfg.projects["demo"], OWNER)
+    post = next(c[2] for c in sync.world.calls if c[:2] == ("POST", "/rooms") and c[2]["name"] == "demo-desk-drew")
+    assert post["external_channel_id"] == "3333"
+
+
+def test_when_discord_cannot_be_read_nothing_is_judged_gone_and_nothing_is_linked(sync):
+    rooms = _made(sync)
+    sync.discord.fail = True
+    assert sync.rs.stale(sync.cfg.projects["demo"], sync.rs._world(sync.world)) == []
+    sync.discord.fail = False
+    sync.discord.empty = True                                                                                  # an empty list means "cannot see", not "all deleted"
+    assert sync.rs.stale(sync.cfg.projects["demo"], sync.rs._world(sync.world)) == [] and rooms
+    assert not [c for c in sync.world.calls if c[0] == "DELETE"]
+
+
+def test_discord_api_is_read_only_and_never_shows_the_token():
+    from shipyard.discordapi import Discord, DiscordError
+    import urllib.request
+    seen = []
+    class R:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'[{"id": "1", "name": "general", "type": 0}, {"id": "2", "name": "x", "type": 2}]'
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = lambda req, timeout=0: (seen.append((req.get_method(), req.full_url, req.get_header("Authorization"))), R())[1]
+    try:
+        assert Discord("sekret").channels("77777") == [{"id": "1", "name": "general", "type": 0}, {"id": "2", "name": "x", "type": 2}]
+    finally:
+        urllib.request.urlopen = orig
+    assert seen == [("GET", "https://discord.com/api/v10/guilds/77777/channels", "Bot sekret")]
+    with pytest.raises(DiscordError):
+        Discord("sekret").channels("../../x")
+    with pytest.raises(DiscordError):
+        Discord("")

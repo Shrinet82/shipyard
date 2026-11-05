@@ -37,6 +37,8 @@ kubernetes:                                   # one least-privilege ServiceAccou
   max_replicas: 10
   kubeconfigs: {viewer: ~/kube/viewer.kubeconfig, deployer: ~/kube/deployer.kubeconfig, ops: ~/kube/ops.kubeconfig}
 
+discord:
+  token_file: ""                              # an env file with DISCORD_BOT_TOKEN (Switch's own bot): lets the room sync READ the server's channel list. Empty = off
 rooms_file: ~/shipyard-rooms.json             # rooms made by the room sync (dashboard: Switch rooms → Sync rooms; chat: `@gatekeeper rooms sync`)
 desks_file: ~/shipyard-desks.json             # which personal desk room is whose (`@gatekeeper desks create`)
 projects:

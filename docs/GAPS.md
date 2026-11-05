@@ -59,3 +59,9 @@ published. Submission on WeMakeDevs for Track 2 and Track 1 is not done. Target:
 2. A Discord run-through of the gate, `exec`, suggestions and the incidents room, which also closes L1 to L3 where Discord and Mattermost share code.
 3. L5 and L6 by looking at them.
 4. P2, P6, then recording.
+
+## Chat apps other than Mattermost and Discord
+
+The room sync reads a server's real channel list only for Discord (`discord.token_file`, read only). On Mattermost and Slack a channel deleted in the chat app leaves
+its Switch room behind and the sync cannot tell; Switch itself does not notice. Deleting a room through Switch leaves the chat channel unless the delete carries
+`retire_channel=true`; the sync's own removals only touch rooms whose channel is already gone.

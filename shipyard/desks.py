@@ -39,6 +39,7 @@ class Desks:
     def __init__(self, cfg: Config, path: str | Path, audit: AuditLog | None, gateway: Callable[[], Any] | None):
         self.cfg, self.path, self.audit, self.gateway = cfg, Path(path), audit, gateway
         self.lock = threading.RLock()
+        self.finder: Callable[[str, str], str | None] | None = None        # (bridge, name) -> id of a chat-app channel that is already there, set by the room sync
 
     def load(self) -> None:
         if not self.path.exists():
@@ -50,6 +51,12 @@ class Desks:
                     self.cfg.desks.setdefault(project, {}).update({str(i): str(r) for i, r in rooms.items()})
         except (ValueError, AttributeError) as exc:
             raise SystemExit(f"{self.path} is damaged ({exc}); fix or remove it") from None
+
+    def forget(self, project: str, identity: str) -> None:
+        """Drop a desk whose room was removed, so the next sync makes it again."""
+        with self.lock:
+            self.cfg.desks.get(project, {}).pop(identity, None)
+            self._write()
 
     def room_for(self, project: str, identity: str) -> str | None:
         return self.cfg.desks.get(project, {}).get(identity)
@@ -97,6 +104,9 @@ class Desks:
                     "channel_type": "channel_private", "agent_names": [AGENT, "gatekeeper"], "user_names": sorted({user, *owners}),
                     "bridge_id": bridge, "group_id": details[bridge].get("group_id")}
             existing = next((r for r in rooms_now if r.get("name") == name and r.get("bridge_id") == bridge), None)
+            channel = None if existing is not None or self.finder is None else self.finder(bridge, name)
+            if channel is not None:                                             # the channel is already there with no room: link it
+                body = {**{k: v for k, v in body.items() if k != "channel_type"}, "external_channel_id": channel}
             if existing is not None:                                            # a desk made earlier and not remembered: take it, do not make a second
                 status, room = 200, {"id": existing["id"]}
             else:

@@ -24,6 +24,7 @@ from .access import AgentAccess, Gateway, read_env
 from .clusterwatch import ClusterWatcher
 from .coolify import CoolifyMcp
 from .desks import Desks
+from .discordapi import Discord, token_from
 from .roomsync import RoomSync
 from .incidents import Incidents
 from .dashauth import DashAuth
@@ -136,7 +137,10 @@ def run(config_path: str) -> None:
     service.desks.load()
     gateway = _gateway_factory(cfg)
     access_for_sync = AgentAccess(cfg, gateway, db, gk.lock, gk.audit) if gateway else None
-    service.roomsync = RoomSync(cfg, expand(cfg.rooms_file), gk.audit, gateway, service.desks, access_for_sync.apply if access_for_sync else None) if gateway else None
+    token = token_from(expand(cfg.discord_token_file)) if cfg.discord_token_file else ""
+    discord = Discord(token) if token else None
+    log.info("Discord channel list (read only) for the room sync: %s", "on" if discord else "off")
+    service.roomsync = RoomSync(cfg, expand(cfg.rooms_file), gk.audit, gateway, service.desks, access_for_sync.apply if access_for_sync else None, discord) if gateway else None
     if service.roomsync:
         service.roomsync.load()
     serve(service, cfg.mcp_port, open(expand(cfg.mcp_token_file)).read().strip())
