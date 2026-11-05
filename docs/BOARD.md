@@ -1,8 +1,8 @@
 # Shipyard Board: the ticket tracker (backend)
 
 Built from the "Shipyard Board — ticket tracker build spec". Tickets live in the Gatekeeper's SQLite database, are made and moved from chat by
-the Repo Agent, are opened automatically from ops events, and every change is an audit row in the same hash chain. The Board's screens are built from the spec's
-description in the dashboard's own style, and will be restyled when the design arrives.
+the Repo Agent, are opened automatically from ops events, and every change is an audit row in the same hash chain. The Board's screens are built to the Shipyard dashboard design
+(the Board, Ticket page, card-states and phone artboards).
 
 ## What was built
 
@@ -19,7 +19,7 @@ description in the dashboard's own style, and will be restyled when the design a
 | Daily standup at `tickets.standup_at` | `StandupScheduler` | done |
 | Notifications: assignment, mention, status change, due date | `TicketFlow._tell`, `due_tick` | done |
 | Dashboard API: list, ticket, summary, move, members, Overview "My tickets" data | `shipyard/dashboard.py` | done |
-| Screens: Board page (four columns, filters, drag or Move to), ticket page (links, timeline, Open in chat), Overview "My tickets" block, sidebar item with open count | `shipyard/web/app.js`, `app.css` | done; checked live in a browser on desktop, mobile and dark |
+| Screens: Board page (four columns, filters, drag or Move to), ticket page (links, timeline, Open in chat), Overview "My tickets" block, sidebar item with open count | `shipyard/web/app.js`, `app.css` | done to the design; checked live in a browser (desktop, phone, dark, a viewer's read-only view, drag and a refused move) |
 | Audit events (`ticket_created` ... `briefing_served`) | `Tickets._event` | done |
 
 ## How it behaves

@@ -43,7 +43,7 @@ listed as future scope.
 | P3 | **Coolify token** is full access (needed by the Gatekeeper for deploy, rollback and logs). The agents hold none. | Low priority. |
 | P4 | **SBOM history** is stored per commit but the dashboard lists them flat, with no per-release timeline. | Future scope. |
 | P5 | **`exec` has no write commands** by design. | Future scope if wanted. |
-| P7 | **The Board screens follow the spec's text, not a design**, and nothing from the Board has been run on Discord. | Restyle when the design arrives. Details in `docs/BOARD.md`. |
+| P7 | **Nothing from the Board has been run on Discord.** | Details in `docs/BOARD.md`. |
 | P8 | **GitHub webhooks are built and were tested live, but the firewall rule is closed again**, so polling does the work. | Reopen port 8766 for GitHub's webhook ranges when wanted. |
 | P9 | **Switch has no threads for agents**, so a member without a desk room gets their briefing right under the standup, not in a thread. | Documented in `docs/BOARD.md`. |
 | P6 | **The demo repo has leftover open PRs** (#4, #5 with an applied suggestion, #9 the workflow-edit demo). | Clean up before recording, or reuse them. |
