@@ -339,16 +339,38 @@ class Installer:
             if status not in (200, 201, 204, 409):
                 self.say(f"  warning: could not add the Gatekeeper to room {room} ({status})")
 
+    def _agent_user(self) -> str | None:
+        """The isolated Linux user the agents run as (`scripts/isolate_agents.sh` makes `agentrun`), if there is one other than whoever runs this."""
+        import getpass
+        import pwd
+        name = str(self.a.get("agents", {}).get("user", "agentrun"))
+        try:
+            pwd.getpwnam(name)
+        except KeyError:
+            return None
+        return None if name == getpass.getuser() else name
+
     def write_codex_config(self) -> None:
         """The agents' only tools: the Gatekeeper's request tool. No Coolify, GitHub or Switch credential."""
         token = self.paths["mcp"].read_text().strip()
-        path = Path(self.get("agents.codex_config", "", str(self.home / ".codex/config.toml")))
+        explicit = self.a.get("agents", {}).get("codex_config")
         text = ('# Written by `shipyard init`. The agents hold only the Gatekeeper\'s request tool: no Coolify, GitHub or Switch credential.\n'
                 '[mcp_servers.gatekeeper]\nurl = "http://127.0.0.1:8765/mcp"\n'
                 f'http_headers = {{ Authorization = "Bearer {token}" }}\n\n'
                 '# Codex account connectors (GitHub, Figma, ...) belong to whoever signed in to Codex; the agents must not inherit them.\n'
                 '[features]\napps = false\n')
-        _write_secret(path, text)
+        user = None if explicit else self._agent_user()
+        if user:                                   # the agents run as another user: Codex reads that user's home, which only that user may write
+            import pwd
+            import subprocess
+            path = f"{pwd.getpwnam(user).pw_dir}/.codex/config.toml"
+            r = subprocess.run(["sudo", "-n", "-u", user, "-H", "sh", "-c", "umask 077; mkdir -p \"$HOME/.codex\" && cat > \"$HOME/.codex/config.toml\""],
+                               input=text, text=True, capture_output=True)
+            if r.returncode != 0:
+                raise InitError(f"could not write the agents' tool config as {user}: {r.stderr.strip()[:200]}")
+        else:
+            path = Path(self.get("agents.codex_config", "", str(self.home / ".codex/config.toml")))
+            _write_secret(path, text)
         self.say(f"  wrote the agents' tool config ({path})")
 
     def service(self) -> None:

@@ -338,3 +338,27 @@ def test_rerunning_without_room_answers_reuses_the_conventional_rooms(home):
     inst.install()
     p = load_config(home / "shipyard.yaml").projects["demo"]
     assert p.ops_rooms == {"e-ops"} and p.maintainer_rooms == {"e-mt"}
+
+
+def test_agents_that_run_as_another_user_get_their_tool_config_in_that_users_home(home, monkeypatch):
+    """The isolated controller runs the agents as `agentrun`: Codex reads that user's home, so the config must be written there, as that user."""
+    import pwd
+    import subprocess
+    from types import SimpleNamespace
+    seen = {}
+    monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir="/home/agentrun") if name == "agentrun" else (_ for _ in ()).throw(KeyError(name)))
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: seen.update(argv=argv, text=kw["input"]) or SimpleNamespace(returncode=0, stderr=""))
+    a = answers(home)
+    a["agents"] = {"create": "no"}                                            # no explicit codex_config: the isolated user's home is the default
+    inst = installer(home, a)
+    inst.paths["mcp"].parent.mkdir(parents=True, exist_ok=True)
+    inst.paths["mcp"].write_text("t" * 32)
+    inst.write_codex_config()
+    assert seen["argv"][:5] == ["sudo", "-n", "-u", "agentrun", "-H"] and "[mcp_servers.gatekeeper]" in seen["text"] and "apps = false" in seen["text"]
+    assert not (home / ".codex/config.toml").exists()
+    a2 = answers(home)
+    a2["agents"] = {"codex_config": str(home / "own.toml")}                    # an explicit path always wins
+    inst2 = installer(home, a2)
+    inst2.paths["mcp"].write_text("t" * 32)
+    inst2.write_codex_config()
+    assert (home / "own.toml").exists()
