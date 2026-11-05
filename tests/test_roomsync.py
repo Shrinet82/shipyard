@@ -183,6 +183,7 @@ def test_the_dashboard_previews_and_syncs_for_owners_only(sync, api):  # noqa: F
         assert api.api("POST", "/api/rooms/preview", who, {})[0] == 403 and api.api("POST", "/api/rooms/sync", who, {})[0] == 403
     s, d = api.api("POST", "/api/rooms/preview", "owner", {})
     assert s == 200 and d["changes"][0] == {"op": "+", "agent": "ShipYard", "text": "#demo-incidents: incidents room"} and any(c["agent"] == "desks" for c in d["changes"])
+    assert "demo-desk-drew" in next(c["text"] for c in d["changes"] if c["agent"] == "desks")
     assert not [c for c in sync.world.calls if c[:2] == ("POST", "/rooms")]                          # a preview creates nothing
     s, d = api.api("POST", "/api/rooms/sync", "owner", {})
     assert s == 200 and d["rooms"] == ["#demo-incidents (ShipYard)"] and d["agent_access_synced"] is True

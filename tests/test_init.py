@@ -340,6 +340,18 @@ def test_rerunning_without_room_answers_reuses_the_conventional_rooms(home):
     assert p.ops_rooms == {"e-ops"} and p.maintainer_rooms == {"e-mt"}
 
 
+def test_rerunning_keeps_the_incidents_room_the_template_made(home):
+    class Existing(FakeGw):
+        rooms = [{"id": "e-ops", "name": "demo-ops", "bridge_display_name": "Mattermost"}, {"id": "e-mt", "name": "demo-maintainers", "bridge_display_name": "Mattermost"},
+                 {"id": "e-inc", "name": "demo-incidents", "bridge_display_name": "Mattermost"}]
+    a = answers(home)
+    del a["rooms"]
+    inst = installer(home, a)
+    inst.gateway = lambda *x: Existing()
+    inst.install()
+    assert load_config(home / "shipyard.yaml").projects["demo"].incident_rooms == {"e-inc"}                 # a second run no longer drops it
+
+
 def test_agents_that_run_as_another_user_get_their_tool_config_in_that_users_home(home, monkeypatch):
     """The isolated controller runs the agents as `agentrun`: Codex reads that user's home, so the config must be written there, as that user."""
     import pwd

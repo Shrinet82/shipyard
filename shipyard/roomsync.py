@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 from .audit import AuditLog
 from .config import Config, Project
+from .desks import slug, username_of
 from .discordapi import TEXT_CHANNEL
 
 log = logging.getLogger("shipyard.roomsync")
@@ -220,7 +221,7 @@ class RoomSync:
             missing = [*self.desks.missing(project), *sorted(i for i in gone_desks if i)]
             if missing:
                 changes.append({"op": "+", "agent": "desks", "text": f"{len(missing)} personal desk room{'s' if len(missing) != 1 else ''}: "
-                                + ", ".join(f"{project.name}-desk-{i.rsplit('-', 1)[-1].split(':')[0]}" for i in missing[:6]) + (" …" if len(missing) > 6 else "")})
+                                + ", ".join(f"{project.name}-desk-{slug(username_of(i) or i)}" for i in missing[:6]) + (" …" if len(missing) > 6 else "")})
         return changes
 
     # -- making them -------------------------------------------------------------------------------------

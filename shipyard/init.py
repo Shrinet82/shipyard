@@ -166,11 +166,11 @@ class Installer:
                 self.room_labels = {}
                 return chosen
         if not self.interactive and "rooms" not in self.a:         # the conventional names: use them if they exist, else make them
-            for kind in ("ops", "maintainers"):
+            for kind in ("ops", "maintainers", "incidents"):
                 name = f"{project}-{kind}"
                 hits = [r["id"] for r in rows if r["name"] == name]
                 chosen[kind] += hits
-                if not hits:
+                if not hits and kind != "incidents":                  # an incidents room is kept if there is one, never made here
                     self.to_create[kind].append(name)
             self.room_labels = {r["id"]: f"#{r['name']} ({r.get('bridge_display_name') or 'room'})" for r in rows}
             return chosen
