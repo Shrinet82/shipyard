@@ -156,4 +156,6 @@ Built in five phases during the hackathon, then extended. Verified live on Matte
 
 `exec` in a **Coolify container** runs through the forced-command wrapper and a root-owned helper (`deploy/ops-shell/`) that sudo allows for the `shipyard-ops` account only: verified live (`ls`, `ps`, `cat /etc/os-release` ran inside the demo container; `env`, `.env` files and shells were refused, and every call is logged to syslog).
 
+The known gaps, with why each matters and what would close it, are in [`docs/GAPS.md`](docs/GAPS.md).
+
 **Future scope:** a Slack run (Switch bridges Slack the same way, but it is untested here); more commands for `exec`, and an `exec` that is allowed to write (today nothing in the list changes anything); applying suggestions from a fork's pull request; per-release SBOM history on the dashboard.
