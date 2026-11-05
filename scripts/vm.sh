@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# Manage the Shipyard dev VMs (AWS profile new-account, Mumbai).
+# Manage the Shipyard dev VMs (AWS profile new-account, Mumbai). SY_ENV=shipyard2 addresses the trial install's VMs instead of the originals.
 #   scripts/vm.sh status | start | stop | ssh build|coolify [cmd...] | put <local> <remote-path-on-build> | myip | tunnel [mattermost] [switch]
 set -euo pipefail
 export AWS_PROFILE=${AWS_PROFILE:-new-account} AWS_REGION=ap-south-1
 KEY=$HOME/.ssh/shipyard-dev
-SG_NAME=shipyard-sg
+ENVNAME=${SY_ENV:-shipyard}            # which set of VMs: the original (shipyard) or a trial install (SY_ENV=shipyard2)
+SG_NAME=${ENVNAME}-sg
 
-ids() { aws ec2 describe-instances --filters Name=tag:Project,Values=shipyard Name=instance-state-name,Values=pending,running,stopping,stopped \
+ids() { aws ec2 describe-instances --filters Name=tag:Project,Values=$ENVNAME Name=instance-state-name,Values=pending,running,stopping,stopped \
   --query 'Reservations[].Instances[].InstanceId' --output text; }
 
 status() {
-  aws ec2 describe-instances --filters Name=tag:Project,Values=shipyard Name=instance-state-name,Values=pending,running,stopping,stopped \
+  aws ec2 describe-instances --filters Name=tag:Project,Values=$ENVNAME Name=instance-state-name,Values=pending,running,stopping,stopped \
     --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId,InstanceType,State.Name,PublicIpAddress,PrivateIpAddress]' --output table
 }
 
-ip_of() { aws ec2 describe-instances --filters Name=tag:Name,Values=shipyard-$1 Name=instance-state-name,Values=running \
+ip_of() { aws ec2 describe-instances --filters Name=tag:Name,Values=${ENVNAME}-$1 Name=instance-state-name,Values=running \
   --query 'Reservations[0].Instances[0].PublicIpAddress' --output text; }
 
 case "${1:-status}" in
