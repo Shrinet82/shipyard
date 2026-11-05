@@ -24,11 +24,15 @@ case "${1:-status}" in
   stop)   aws ec2 stop-instances --instance-ids $(ids) >/dev/null; echo "stopping; disks still bill (~\$0.36/day)"; status ;;
   ssh)    host=$(ip_of "$2"); shift 2; exec ssh ${SSH_TTY:+-t} -i "$KEY" -o StrictHostKeyChecking=accept-new ubuntu@"$host" "$@" ;;
   put)    host=$(ip_of build); exec scp -i "$KEY" -o StrictHostKeyChecking=accept-new "$2" ubuntu@"$host":"$3" ;;
-  tunnel) host=$(ip_of build); extra=()
-          echo "dashboard on http://localhost:8780"
-          if [ "${2:-}" = mattermost ]; then extra=(-L 8065:localhost:8065); echo "Mattermost on http://localhost:8065"; fi
+  tunnel) host=$(ip_of build); fwd=()
+          busy() { (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null; }          # something already listens on that local port (an earlier tunnel)
+          if busy 8780; then echo "dashboard: already forwarded by another tunnel on http://localhost:8780"; else fwd+=(-L 8780:localhost:8780); echo "dashboard on http://localhost:8780"; fi
+          if [ "${2:-}" = mattermost ]; then
+            if busy 8065; then echo "Mattermost: already forwarded on http://localhost:8065"; else fwd+=(-L 8065:localhost:8065); echo "Mattermost on http://localhost:8065"; fi
+          fi
+          [ ${#fwd[@]} -gt 0 ] || { echo "nothing new to forward"; exit 0; }
           echo "(Ctrl-C closes the tunnel)"
-          exec ssh -N -i "$KEY" -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes -L 8780:localhost:8780 "${extra[@]}" ubuntu@"$host" ;;
+          exec ssh -N -i "$KEY" -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes "${fwd[@]}" ubuntu@"$host" ;;
   myip)   sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$SG_NAME --query 'SecurityGroups[0].GroupId' --output text)
           me=$(curl -s https://checkip.amazonaws.com)/32
           for port in 22 8000; do
