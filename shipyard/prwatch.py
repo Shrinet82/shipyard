@@ -62,6 +62,7 @@ class PrWatcher:
         project = next((p for p in self.cfg.projects.values() if p.repo and p.repo.name.lower() == repo.lower()), None)
         if project is None:
             return
+        log.info("GitHub webhook %s for %s: refreshing", event, repo)
         with self._hook_lock:                                    # one refresh at a time; a burst of events becomes a few refreshes
             try:
                 self._poll_project(project)
