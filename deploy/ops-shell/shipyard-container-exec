@@ -4,7 +4,7 @@
   sudo -n /usr/local/sbin/shipyard-container-exec <coolify application uuid> <command> [args...]
 
 The forced-command wrapper calls this for the shipyard-ops key (sudoers lets that one account run exactly this file). We find the
-container from the application's uuid (Coolify names it `<uuid>-<digits>`), resolve every path argument inside the container
+container from the application's uuid (Coolify names it `<uuid>-<timestamp>`, e.g. z8cy...-20261104T184236), resolve every path argument inside the container
 (readlink -f) so a symlink cannot lead to a refused file, apply the same allowlist as the Gatekeeper, and run the command with
 `docker exec` as an argument list: no shell, no tty, no stdin, a timeout and an output cap. Every call is logged to syslog.
 """
@@ -28,7 +28,7 @@ def docker(*args, timeout=TIMEOUT):
 
 def container_of(uuid):
     p = docker("ps", "--filter", f"name={uuid}", "--format", "{{.Names}}")
-    names = sorted(n for n in p.stdout.split() if re.fullmatch(re.escape(uuid) + r"-\d+", n))
+    names = sorted(n for n in p.stdout.split() if re.fullmatch(re.escape(uuid) + r"-[0-9T]+", n))
     return names[-1] if names else None
 
 
