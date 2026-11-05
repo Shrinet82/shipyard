@@ -57,6 +57,7 @@ The merge exchange ran on a build VM against a real repository and a real Grype 
 | Dangerous | `merge <pr>`, `apply-suggestion <pr> <n\|all>` (a reviewer's suggested change, committed to the PR branch), `shell <host> <cmd>` (owner) | maintainer / owner, plus a second person's approval |
 | Approve | `approve <id>`, `deny <id>` | owner, or another maintainer |
 | Automatic | deploy-failure and crash **alerts** with real log evidence and a three-line diagnosis; **PR alerts** (opened, CI red or green, conflicts, stale); a **daily digest** per maintainer | |
+| Board | tickets in the Gatekeeper's database, made and moved from chat through the Repo Agent (`@repo-agent track: ...`, `assign`, `move`, `my briefing`, `team status`), opened automatically from failed deploys, stopped apps and SBOM blocks, linked to pull requests that say `Fixes SY-12`; see [`docs/BOARD.md`](docs/BOARD.md) | by role |
 | Security | an **SBOM report** for every CI run, diffed against the last deployed release, posted in the maintainers and ops rooms with the deploy plan; critical CVEs **gate** the deploy; new copyleft or unknown **licences** are flagged (report only) | owner overrides |
 | Dashboard | audit log, pending approvals, SBOM reports, backend health, roles and agent access | owner edits roles |
 

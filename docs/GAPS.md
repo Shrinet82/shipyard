@@ -43,6 +43,7 @@ listed as future scope.
 | P3 | **Coolify token** is full access (needed by the Gatekeeper for deploy, rollback and logs). The agents hold none. | Low priority. |
 | P4 | **SBOM history** is stored per commit but the dashboard lists them flat, with no per-release timeline. | Future scope. |
 | P5 | **`exec` has no write commands** by design. | Future scope if wanted. |
+| P7 | **The Board has no screens yet** (API only), personal desk rooms are not built, and it has not been run on Discord. | Details in `docs/BOARD.md`. |
 | P6 | **The demo repo has leftover open PRs** (#4, #5 with an applied suggestion, #9 the workflow-edit demo). | Clean up before recording, or reuse them. |
 
 ## 5. Submission items not done
