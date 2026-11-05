@@ -252,7 +252,10 @@ class Dashboard:
         p: Project = c["project"]
         facts = facts_for(self.tickets, p, c["identity"], github=None, pending=self.gk.pending_list(p.name), now=self.now())
         mine = [{k: t[k] for k in ("key", "title", "status", "priority", "due_on", "overdue")} for t in facts["tickets"][:5]]
-        return {"mine": mine, "mine_total": len(facts["tickets"]), "first_step": facts["first_step"], "summary": self.tickets.summary(p.name, c["identity"])}
+        own = facts["tickets"]
+        free = next((t["key"] for t in sorted(self.tickets.all_open(p.name), key=lambda t: t["number"]) if t["assignee"] is None), None)      # an example for "take one in chat"
+        return {"mine": mine, "mine_total": len(own), "mine_overdue": sum(1 for t in own if t["overdue"]), "mine_review": sum(1 for t in own if t["status"] == "review"),
+                "unassigned_key": free, "first_step": facts["first_step"], "summary": self.tickets.summary(p.name, c["identity"])}
 
     def _audit(self, c, q: dict[str, str]) -> Resp:
         p: Project = c["project"]

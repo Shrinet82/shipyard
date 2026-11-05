@@ -546,7 +546,9 @@ class Tickets:
                                             (project,)).fetchone()[0]
             mine = self.gk.db.execute("SELECT COUNT(*) FROM tickets WHERE project=? AND deleted_at IS NULL AND assignee=? AND status NOT IN ('done','cancelled')",
                                       (project, caller)).fetchone()[0]
-        return {"by_status": {s: by.get(s, 0) for s in STATUSES}, "overdue": overdue, "unassigned": unassigned, "mine": mine,
+            automatic = self.gk.db.execute("SELECT COUNT(*) FROM tickets WHERE project=? AND deleted_at IS NULL AND reporter LIKE 'system:%' AND status NOT IN ('done','cancelled')",
+                                           (project,)).fetchone()[0]
+        return {"by_status": {s: by.get(s, 0) for s in STATUSES}, "overdue": overdue, "unassigned": unassigned, "mine": mine, "automatic": automatic,
                 "open": sum(by.get(s, 0) for s in ("todo", "doing", "review"))}
 
     def all_open(self, project: str) -> list[dict[str, Any]]:

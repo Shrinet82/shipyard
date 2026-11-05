@@ -161,3 +161,13 @@ def test_me_says_whether_the_board_is_on_and_the_ticket_page_gets_a_chat_link(ap
     assert api.api("GET", "/api/tickets/SY-2")[1]["room_url"] is None                                                       # only https links are passed on
     api.dash.access = None
     assert api.api("GET", "/api/tickets/SY-1")[1]["room_url"] is None                                                       # no Switch: no link, no error
+
+
+def test_the_overview_block_and_summary_carry_what_the_design_shows(api):
+    seed(api)
+    api.t.gk.db.execute("UPDATE tickets SET reporter='system:alert' WHERE key='SY-2'")
+    s, d = api.api("GET", "/api/tickets/summary")
+    assert d["automatic"] == 1 and d["unassigned"] == 1
+    s, d = api.api("GET", "/api/overview", "dep")
+    b = d["board"]
+    assert b["mine_total"] == 1 and b["mine_overdue"] == 0 and b["mine_review"] == 0 and b["unassigned_key"] == "SY-2" and b["summary"]["automatic"] == 1

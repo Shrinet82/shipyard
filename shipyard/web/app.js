@@ -21,7 +21,10 @@ const ICONS = {
   lock: ['rect:5,11,14,10', 'M8 11V8a4 4 0 0 1 8 0v3'],
   rooms: ['M4 5h16v10H9l-5 4z', 'M8 9h8M8 12h5'],
   board: ['rect:3,4,5,16', 'rect:10,4,5,10', 'rect:17,4,4,13'],
-  pr: ['circle:6,5,2', 'circle:6,19,2', 'circle:18,19,2', 'M6 7v10', 'M18 17V10a3 3 0 0 0-3-3h-3'],
+  pr: ['circle:6,6,2.5', 'circle:18,18,2.5', 'M6 8.5v7a2.5 2.5 0 0 0 2.5 2.5H15.5'],
+  bolt: ['M13 2L4 14h7l-1 8 9-12h-7z'],
+  chevron: ['M6 9l6 6 6-6'],
+  arrow: ['M5 12h14', 'M13 6l6 6-6 6'],
 };
 function icon(name, size = 18) {
   const s = document.createElementNS(SVG_NS, 'svg');
@@ -90,7 +93,7 @@ function rel(ts) {
   if (d < 45) return 'just now';
   if (d < 3600) return Math.round(d / 60) + ' min ago';
   if (d < 86400) return Math.round(d / 3600) + ' h ago';
-  return Math.round(d / 86400) + ' day' + (Math.round(d / 86400) === 1 ? '' : 's') + ' ago';
+  return Math.round(d / 86400) === 1 ? 'yesterday' : Math.round(d / 86400) + ' days ago';
 }
 const timeEl = (ts) => h('span', { class: 'muted', title: fullTime(ts), text: rel(ts) });
 function countdown(ts) { const s = Math.max(0, Math.round(ts - Date.now() / 1000)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
@@ -108,10 +111,10 @@ function errorBanner(message, retry) {
     h('span', { class: 'row' }, icon('alert'), h('span', { text: message })),
     retry && h('button', { class: 'btn', type: 'button', onclick: retry, text: 'Retry now' }));
 }
-function toast(text, bad) {
+function toast(text, bad, lead) {
   let box = document.querySelector('.toasts');
   if (!box) { box = h('div', { class: 'toasts' }); document.body.appendChild(box); }
-  const t = h('div', { class: 'toast' + (bad ? ' bad' : ''), role: bad ? 'alert' : 'status' }, icon(bad ? 'x' : 'check', 16), h('span', { text }),
+  const t = h('div', { class: 'toast' + (bad ? ' bad' : ''), role: bad ? 'alert' : 'status' }, icon(bad ? 'x' : 'check', 16), h('span', null, lead ? h('strong', { text: lead + ' ' }) : null, text),
     h('button', { type: 'button', 'aria-label': 'Dismiss', onclick: () => t.remove(), text: '✕' }));
   box.appendChild(t);
   setTimeout(() => t.remove(), 6000);
@@ -201,7 +204,7 @@ function refreshBadges() {
     const a = document.querySelector('.nav a[data-route="' + route + '"]');
     if (!a) continue;
     const cur = a.querySelector('.count');
-    if (n > 0) { if (cur) cur.textContent = n; else a.insertBefore(h('span', { class: 'count mono', text: n }), a.querySelector('.tag')); } else if (cur) cur.remove();
+    if (n > 0) { if (cur) cur.textContent = n; else a.insertBefore(h('span', { class: 'count mono' + (route === 'board' ? ' plain' : ''), text: n }), a.querySelector('.tag')); } else if (cur) cur.remove();
   }
 }
 const OWNER_NAV = [['roles', 'Roles', 'roles'], ['agents', 'Agent access', 'key']];
@@ -218,7 +221,7 @@ function Chrome(page, current) {
   chainBadge = h('span', { class: 'verified' }, icon('shield', 14), 'Checking audit chain…');
   const badge = (route) => (route === 'approvals' ? S.approvals : route === 'board' ? S.open : 0);
   const link = ([route, label, ic], tag) => h('a', { href: '#/' + route, 'data-route': route, 'aria-current': current === route ? 'page' : null },
-    icon(ic), label, badge(route) ? h('span', { class: 'count mono', text: badge(route) }) : null, tag ? h('span', { class: 'tag', text: 'owner' }) : null);
+    icon(ic), label, badge(route) ? h('span', { class: 'count mono' + (route === 'board' ? ' plain' : ''), text: badge(route) }) : null, tag ? h('span', { class: 'tag', text: 'owner' }) : null);
   return h('div', { class: 'sy' },
     h('header', { class: 'top' },
       h('div', { class: 'row' }, h('span', { class: 'brand' }, icon('logo', 24), 'Shipyard'), h('span', { class: 'vsep' }), h('span', { class: 'muted', text: 'Project' }),
@@ -511,108 +514,210 @@ async function Agents(into) {
 }
 
 
-// ---- the Board ----------------------------------------------------------------------------------------------------------
+// ---- the Board (built to the design's Board, Ticket page and card-state artboards) ---------------------------------------
 const STATUSES = ['todo', 'doing', 'review', 'done'];
 const STATUS_LABEL = { todo: 'To do', doing: 'Doing', review: 'Review', done: 'Done', cancelled: 'Cancelled' };
-const EMPTY_COL = { todo: 'Nothing waiting', doing: 'Nothing in progress', review: 'Nothing in review', done: 'Nothing finished this week' };
+const FLOW = { todo: ['doing', 'cancelled'], doing: ['review', 'todo'], review: ['done', 'doing'], done: ['todo'], cancelled: ['todo'] };   // wording only: the Gatekeeper decides every move
+const EMPTY_COL = { todo: 'Nothing waiting', doing: 'Nothing in progress', review: 'Nothing in review', done: 'Nothing done in the last 7 days' };
 const SOURCE_LABEL = { chat: 'chat', dashboard: 'dashboard', alert: 'alert', incident: 'incident', deploy_failed: 'deploy', sbom_gate: 'CVE' };
 const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
+const HUES = ['accent', 'violet', 'good', 'warn'];
 const isoTs = (v) => (v ? Date.parse(v) / 1000 : 0);
-const statusChip = (st) => chip(STATUS_LABEL[st] || st, 's-' + st);
-const prioChip = (p) => chip(p, 'p-' + p);
-const autoBadge = (t) => (t.automatic ? h('span', { class: 'chip auto', title: 'Opened automatically by ' + t.reporter.name, text: 'auto · ' + (SOURCE_LABEL[t.source] || t.source) }) : null);
-const dueEl = (t) => (t.due_on ? h('span', { class: 'due' + (t.overdue ? ' overdue' : ''), title: t.overdue ? 'Overdue' : 'Due date', text: (t.overdue ? 'Overdue · ' : 'Due ') + t.due_on }) : null);
-function who(p, none) {
-  if (!p) return h('span', { class: 'who muted' }, h('span', { class: 'avatar none', 'aria-hidden': 'true', text: '–' }), none || 'Unassigned');
-  return h('span', { class: 'who' }, h('span', { class: 'avatar', 'aria-hidden': 'true', text: (p.name || '?').replace(/^system:/, '').charAt(0).toUpperCase() }), p.name);
+const dueText = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const dayWord = (ts) => { const d = Math.floor(Math.max(0, Date.now() / 1000 - ts) / 86400); return d < 1 ? 'today' : d === 1 ? 'yesterday' : d + ' days ago'; };
+function hue(id) { let n = 0; for (const c of String(id || '')) n = (n * 31 + c.charCodeAt(0)) >>> 0; return HUES[n % HUES.length]; }
+const plainName = (p) => (p && p.name ? String(p.name).replace(/^system:/, '') : 'someone');
+function ring(size) {                                                       // the dashed "running" ring
+  const s = icon('alert', size); s.replaceChildren();
+  const c = document.createElementNS(SVG_NS, 'circle');
+  for (const [k, v] of Object.entries({ cx: 12, cy: 12, r: 8, 'stroke-dasharray': '3 3', 'stroke-width': 3 })) c.setAttribute(k, v);
+  s.appendChild(c); return s;
 }
-const CI_MARK = { green: '✓', red: '✕', pending: '…', none: '' };
-function prMark(pr) {
-  if (!pr) return null;
-  const word = pr.ci === 'green' ? 'CI passed' : pr.ci === 'red' ? 'CI failed' : pr.ci === 'pending' ? 'CI running' : 'no CI result';
-  return h('span', { class: 'prmark ci-' + pr.ci, title: 'PR #' + pr.number + ' · ' + pr.state + ' · ' + word }, icon('pr', 14), '#' + pr.number, h('span', { class: 'ci', 'aria-hidden': 'true', text: CI_MARK[pr.ci] || '' }), h('span', { class: 'sr', text: pr.state + ', ' + word }));
+function dots() {
+  const s = document.createElementNS(SVG_NS, 'svg');
+  for (const [k, v] of Object.entries({ width: 16, height: 16, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true' })) s.setAttribute(k, v);
+  for (const cx of [5, 12, 19]) { const c = document.createElementNS(SVG_NS, 'circle'); c.setAttribute('cx', cx); c.setAttribute('cy', 12); c.setAttribute('r', 1.8); s.appendChild(c); }
+  return s;
+}
+function marker(st) {
+  if (st === 'done') return icon('check', 10);
+  return st === 'cancelled' ? null : h('span', { class: 'mk mk-' + st, 'aria-hidden': 'true' });
+}
+const statusPill = (st) => h('span', { class: 'spill s-' + st }, marker(st), STATUS_LABEL[st] || st);
+const prioChip = (p) => h('span', { class: 'prio p-' + p, text: p });
+const autoBadge = (t) => (t.automatic ? h('span', { class: 'autob', title: 'Opened automatically by ' + plainName(t.reporter), text: 'auto · ' + (SOURCE_LABEL[t.source] || t.source) }) : null);
+const labelTag = (l) => h('span', { class: 'ltag', text: l });
+const avatar = (p, size) => h('span', { class: 'avatar h-' + hue(p && p.id) + (size ? ' ' + size : ''), 'aria-hidden': 'true', text: plainName(p).charAt(0).toUpperCase() });
+function who(p, hint) {
+  if (!p) return h('span', { class: 'who muted' }, h('span', { class: 'avatar none', 'aria-hidden': 'true' }), 'Unassigned', hint ? [' · ', mono(hint)] : null);
+  return h('span', { class: 'who' }, avatar(p), plainName(p));
+}
+function dueBit(t, done) {
+  if (done) return h('span', { class: 'tiny muted', title: fullTime(isoTs(t.closed_at || t.updated_at)), text: dayWord(isoTs(t.closed_at || t.updated_at)) });
+  if (!t.due_on) return h('span', { class: 'mono tiny muted', text: 'no due date' });
+  return t.overdue ? h('span', { class: 'mono overdue-chip', text: 'overdue · ' + dueText(t.due_on) }) : h('span', { class: 'mono tiny muted', text: 'due ' + dueText(t.due_on) });
+}
+function ciMark(ci) {
+  if (ci === 'green') return h('span', { class: 'ci ci-green' }, icon('check', 12), 'CI passed');
+  if (ci === 'red') return h('span', { class: 'ci ci-red' }, icon('x', 12), 'CI failed');
+  if (ci === 'pending') return h('span', { class: 'ci ci-pending' }, ring(12), 'CI running');
+  return null;
+}
+const prRow = (pr) => (pr ? h('div', { class: 'prrow' }, icon('pr', 14), mono('PR #' + pr.number), pr.state && pr.state !== 'open' ? h('span', { class: 'tiny muted', text: pr.state }) : null, h('span', { class: 'grow' }), ciMark(pr.ci)) : null);
+
+// the move menu: every status, with the reason beside the ones that can't be used
+function moveItems(t) {
+  const allowed = t.can_move || [];
+  return ['todo', 'doing', 'review', 'done', 'cancelled'].map((s) => {
+    if (s === t.status) return { status: s, label: STATUS_LABEL[s], note: 'current', enabled: false };
+    if (allowed.includes(s)) return { status: s, label: STATUS_LABEL[s], enabled: true };
+    if (!FLOW[t.status].includes(s)) return { status: s, label: STATUS_LABEL[s], note: 'not from ' + STATUS_LABEL[t.status], enabled: false, title: STATUS_LABEL[t.status] + " can't go straight to " + STATUS_LABEL[s] };
+    return s === 'cancelled' || (t.status === 'done' || t.status === 'cancelled')
+      ? { status: s, label: STATUS_LABEL[s], note: 'maintainers only', enabled: false, title: s === 'cancelled' ? 'Only maintainers and owners can cancel' : 'Only maintainers and owners can reopen' }
+      : { status: s, label: STATUS_LABEL[s], note: 'not for your role', enabled: false, title: S.me.role === 'viewer' ? "Viewers can't move tickets" : 'You can move tickets assigned to you; a maintainer can move any' };
+  });
+}
+let openMenu = null;
+function closeMenu(refocus) {
+  if (!openMenu) return;
+  const m = openMenu; openMenu = null;
+  m.el.remove(); document.removeEventListener('keydown', m.onKey, true); document.removeEventListener('mousedown', m.onDown, true);
+  window.removeEventListener('resize', m.onClose); window.removeEventListener('scroll', m.onClose, true);
+  m.btn.setAttribute('aria-expanded', 'false'); if (refocus) m.btn.focus();
+}
+async function doMove(t, to) {
+  try { const r = await moveTicket(t.key, to); toast(t.key + ': ' + STATUS_LABEL[t.status] + ' → ' + STATUS_LABEL[to]); return r; }
+  catch (e) { if (!e.signedOut) toast(e.message, true, t.key + ' not moved.'); throw e; }
 }
 async function moveTicket(key, status) { return api('/api/tickets/' + encodeURIComponent(key) + '/move', { method: 'POST', body: { status } }); }
-// the keyboard route to moving a ticket: a menu of the other statuses, the ones this role may not use disabled
-function moveMenu(t, done) {
-  const allowed = t.can_move || [];
-  const sel = h('select', { class: 'moveto', 'aria-label': 'Move ' + t.key + ' to', disabled: allowed.length ? null : true, title: allowed.length ? null : 'Your role cannot move this ticket' },
-    h('option', { value: '', text: 'Move to…' }),
-    ['todo', 'doing', 'review', 'done', 'cancelled'].filter((x) => x !== t.status).map((x) => h('option', { value: x, disabled: allowed.includes(x) ? null : true, text: STATUS_LABEL[x] + (allowed.includes(x) ? '' : ' (not allowed)') })));
-  sel.addEventListener('change', async () => {
-    const to = sel.value; sel.value = '';
-    if (!to) return;
-    try { await moveTicket(t.key, to); toast(t.key + ': ' + t.status + ' → ' + to); done(); } catch (e) { toast(e.message, true); }
-  });
-  return sel;
+function openMoveMenu(btn, t, done) {
+  closeMenu();
+  const items = moveItems(t);
+  const els = items.map((it) => h('button', { class: 'mi' + (it.enabled ? '' : ' off'), type: 'button', role: 'menuitem', 'aria-disabled': it.enabled ? null : 'true', title: it.title || null, tabindex: '-1',
+    onclick: async () => { if (!it.enabled) return; closeMenu(true); try { await doMove(t, it.status); done(); } catch (e) { /* the toast says why */ } } },
+    it.label, it.note ? h('span', { class: 'mi-note', text: ' · ' + it.note }) : null));
+  const el = h('div', { class: 'menu', role: 'menu', 'aria-label': 'Move ' + t.key }, els);
+  document.body.appendChild(el);
+  const r = btn.getBoundingClientRect(), w = el.offsetWidth;
+  el.style.top = Math.min(r.bottom + 6, window.innerHeight - el.offsetHeight - 8) + 'px';
+  el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+  const live = () => els.filter((e) => e.getAttribute('aria-disabled') !== 'true');
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeMenu(true); }
+    else if (e.key === 'Tab') closeMenu(false);
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); const l = live(); if (!l.length) return;
+      const i = l.indexOf(document.activeElement); l[(i + (e.key === 'ArrowDown' ? 1 : l.length - 1)) % l.length].focus();
+    }
+  };
+  const onDown = (e) => { if (!el.contains(e.target) && e.target !== btn && !btn.contains(e.target)) closeMenu(false); };
+  const onClose = () => closeMenu(false);
+  openMenu = { el, btn, onKey, onDown, onClose };
+  document.addEventListener('keydown', onKey, true); document.addEventListener('mousedown', onDown, true);
+  window.addEventListener('resize', onClose); window.addEventListener('scroll', onClose, true);
+  btn.setAttribute('aria-expanded', 'true');
+  (live()[0] || el).focus();
 }
 
 function Card(t, hooks) {
   const labels = (t.labels || []).slice(0, 3), more = (t.labels || []).length - labels.length;
-  const movable = (t.can_move || []).length > 0;
-  return h('article', { class: 'tcard' + (t.overdue ? ' overdue' : ''), 'data-key': t.key, draggable: movable ? 'true' : null, title: movable ? null : 'Your role cannot move this ticket',
-    ondragstart: (e) => { hooks.drag(t.key); e.dataTransfer.setData('text/plain', t.key); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.classList.add('dragging'); },
-    ondragend: (e) => { hooks.drag(null); e.currentTarget.classList.remove('dragging'); } },
-    h('div', { class: 'row between tight' }, h('a', { class: 'mono small tkey', href: '#/tickets/' + t.key, text: t.key }), autoBadge(t)),
-    h('a', { class: 'ttitle', href: '#/tickets/' + t.key, text: t.title }),
-    h('div', { class: 'row tight' }, prioChip(t.priority), dueEl(t)),
-    labels.length ? h('div', { class: 'row tight' }, labels.map((l) => h('span', { class: 'label', text: l })), more > 0 ? h('span', { class: 'label', title: (t.labels || []).slice(3).join(', '), text: '+' + more }) : null) : null,
-    h('div', { class: 'row between tight' }, who(t.assignee), prMark(t.pr)),
-    moveMenu(t, hooks.reload));
+  const isDone = t.status === 'done';
+  const movable = (t.can_move || []).length > 0 && !hooks.paused();
+  const btn = h('button', { class: 'dotsbtn', type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false', disabled: movable ? null : true,
+    'aria-label': movable ? 'Move ' + t.key : 'Move ' + t.key + (S.me.role === 'viewer' ? ' (not allowed for viewers)' : ' (not allowed)'),
+    title: movable ? null : hooks.paused() ? 'Moves are paused until the Gatekeeper is back' : S.me.role === 'viewer' ? "Viewers can't move tickets" : "You can't move this ticket",
+    onclick: () => openMoveMenu(btn, t, hooks.reload) }, dots());
+  const card = h('article', { class: 'tcard' + (t.overdue ? ' overdue' : ''), 'data-key': t.key, draggable: movable ? 'true' : null },
+    h('div', { class: 'cardtop' }, h('a', { class: 'ctitle', href: '#/tickets/' + t.key }, h('span', { class: 'mono tkey', text: t.key }), h('span', { class: 'ttl', text: t.title })), (isDone && !movable) ? null : btn),
+    isDone ? null : h('div', { class: 'row tight' }, prioChip(t.priority), autoBadge(t), labels.map(labelTag), more > 0 ? h('span', { class: 'ltag', title: (t.labels || []).slice(3).join(', '), text: '+' + more }) : null),
+    isDone ? h('div', { class: 'row tight' }, autoBadge(t), labels.map(labelTag)) : null,
+    h('div', { class: 'row between tight' }, who(t.assignee, !t.assignee && !isDone ? '@repo-agent take ' + t.key : null), dueBit(t, isDone)),
+    prRow(t.pr),
+    (!movable && !isDone && !hooks.paused()) ? h('div', { class: 'readonly' }, icon('lock', 12), 'Read-only for your role · not draggable') : null);
+  if (movable) {
+    card.addEventListener('dragstart', (e) => {
+      closeMenu(false); hooks.drag({ key: t.key, from: t.status, title: t.title });
+      e.dataTransfer.setData('text/plain', t.key); e.dataTransfer.effectAllowed = 'move';
+      const clone = card.cloneNode(true); clone.classList.add('dragclone'); clone.style.width = card.offsetWidth + 'px'; document.body.appendChild(clone);
+      e.dataTransfer.setDragImage(clone, 24, 24); setTimeout(() => clone.remove(), 0);
+      setTimeout(() => card.classList.add('ghost'), 0);                        // a placeholder stays where the card was
+    });
+    card.addEventListener('dragend', () => { card.classList.remove('ghost'); hooks.drag(null); });
+  }
+  return card;
 }
 
 async function Board(into) {
   const f = { assignee: '', label: '', priority: '', source: '', q: '', unassigned: false, overdue: false };
-  let tickets = [], members = [], summary = null, more = false, seq = 0, dragging = null;
+  let tickets = [], members = [], summary = null, more = false, seq = 0, drag = null, lastOk = 0, offline = false, loaded = false, freeKey = null;
   const labels = new Set();
-  const board = h('div', { class: 'board', 'aria-label': 'Tickets by status' }), counts = h('p', { class: 'muted', 'aria-live': 'polite' });
-  const sel = (id, label, key, all, opts) => h('div', { class: 'field' }, h('label', { for: id, text: label }),
-    h('select', { id, onchange: (e) => { f[key] = e.target.value; load(); } }, h('option', { value: '', text: all }), opts));
-  const assigneeSel = sel('fa', 'Assignee', 'assignee', 'Everyone', null), labelSel = sel('fl', 'Label', 'label', 'Any label', null);
-  const q = h('input', { id: 'fq', type: 'search', placeholder: 'Title, text or key', 'aria-label': 'Search tickets' });
+  const counts = h('p', { class: 'muted', 'aria-live': 'polite' }), bannerBox = h('div'), emptyBox = h('div'), hint = h('div', { class: 'swipe' });
+  const wrap = h('div', { class: 'boardwrap' }), board = h('div', { class: 'board' });
+  wrap.appendChild(board);
+  const field = (id, label, ctl, cls) => h('div', { class: 'field ' + (cls || '') }, h('label', { for: id, text: label }), ctl);
+  const select = (id, key) => { const s = h('select', { id, onchange: (e) => { f[key] = e.target.value; s.classList.toggle('active', !!e.target.value); load(); } }); return s; };
+  const aSel = select('ba', 'assignee'), lSel = select('bl', 'label'), pSel = select('bp', 'priority'), sSel = select('bs', 'source');
+  put(pSel, h('option', { value: '', text: 'Any priority' }), PRIORITIES.map((p) => h('option', { value: p, text: p })));
+  put(sSel, h('option', { value: '', text: 'Any source' }), Object.entries(SOURCE_LABEL).map(([v, t]) => h('option', { value: v, text: t })));
+  const q = h('input', { id: 'bq', type: 'search', placeholder: 'Key or title' });
   let timer = null;
   q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { f.q = q.value.trim(); load(); }, 250); });
-  const toggle = (key, text) => { const b = h('button', { class: 'btn toggle', type: 'button', 'aria-pressed': 'false', text, onclick: () => { f[key] = !f[key]; b.setAttribute('aria-pressed', String(f[key])); load(); } }); return b; };
-  const form = h('form', { role: 'search', class: 'row filters', onsubmit: (e) => e.preventDefault() },
-    h('div', { class: 'field' }, h('label', { for: 'fq', text: 'Search' }), q), assigneeSel, labelSel,
-    sel('fp', 'Priority', 'priority', 'Any priority', PRIORITIES.map((p) => h('option', { value: p, text: p }))),
-    sel('fs', 'Source', 'source', 'Any source', Object.entries(SOURCE_LABEL).map(([v, t]) => h('option', { value: v, text: t }))),
-    h('div', { class: 'row tight togglerow' }, toggle('unassigned', 'Unassigned'), toggle('overdue', 'Overdue')));
+  const pill = (key, text) => { const b = h('button', { class: 'pillbtn', type: 'button', 'aria-pressed': 'false', onclick: () => { f[key] = !f[key]; b.setAttribute('aria-pressed', String(f[key])); load(); } }, text); return b; };
+  const unBtn = pill('unassigned', 'Unassigned'), odBtn = pill('overdue', 'Overdue');
+  const form = h('form', { role: 'search', class: 'bfilters', onsubmit: (e) => e.preventDefault() },
+    field('bq', 'Search', q, 'grow2'), field('ba', 'Assignee', aSel), field('bl', 'Label', lSel), field('bp', 'Priority', pSel), field('bs', 'Source', sSel),
+    h('div', { class: 'row tight pills2' }, unBtn, odBtn));
 
   function fillSelects() {
-    const keep = (s, v) => { s.value = v; };
-    const a = assigneeSel.querySelector('select'), l = labelSel.querySelector('select');
-    put(a, h('option', { value: '', text: 'Everyone' }), h('option', { value: 'me', text: 'Me' }), members.map((m) => h('option', { value: m.id, text: m.name })));
-    put(l, h('option', { value: '', text: 'Any label' }), [...labels].sort().map((x) => h('option', { value: x, text: x })));
-    keep(a, f.assignee); keep(l, f.label);
+    put(aSel, h('option', { value: '', text: 'Everyone' }), h('option', { value: 'me', text: 'Me' }), members.map((m) => h('option', { value: m.id, text: m.name })));
+    put(lSel, h('option', { value: '', text: 'All labels' }), [...labels].sort().map((x) => h('option', { value: x, text: x })));
+    aSel.value = f.assignee; lSel.value = f.label;
+    aSel.classList.toggle('active', !!f.assignee); lSel.classList.toggle('active', !!f.label);
   }
-  function drawCounts() {
-    if (!summary) return;
-    put(counts, summary.open + ' open · ' + summary.overdue + ' overdue · ' + summary.unassigned + ' unassigned' + (more ? ' · showing the newest 200' : ''));
-    S.open = summary.open; refreshBadges();
+  function drawHead() {
+    if (summary) {
+      put(counts, summary.open + ' open · ' + summary.unassigned + ' unassigned · ' + summary.overdue + ' overdue · ' + summary.automatic + ' created automatically' + (more ? ' · showing the newest 200' : ''));
+      put(odBtn, 'Overdue' + (summary.overdue ? ' · ' + summary.overdue : ''));
+      S.open = summary.open; refreshBadges();
+    }
+    put(bannerBox, offline ? h('div', { class: 'banner', role: 'alert' }, h('span', { class: 'row tight' }, icon('alert'), h('span', null, h('strong', { class: 'crit', text: 'Gatekeeper unreachable. ' }),
+      'Showing the board from ' + (lastOk ? fmtIn(lastOk, 'UTC').slice(11, 16) + ' UTC' : 'the last load') + '. Moves are paused until it’s back.')), h('button', { class: 'btn', type: 'button', onclick: load, text: 'Retry now' })) : null);
+    const mineEmpty = loaded && f.assignee === 'me' && !tickets.length && !offline;
+    put(emptyBox, mineEmpty ? h('div', { class: 'empty' }, icon('roles', 32), h('div', { class: 'small strong', text: 'Nothing assigned to you' }),
+      h('div', { class: 'small muted' }, ((summary && summary.unassigned) || 0) + ' ticket' + (summary && summary.unassigned === 1 ? ' is' : 's are') + ' unassigned. Take one in chat with ', mono('@repo-agent take ' + (freeKey || 'SY-1')), ', or clear the Me filter.')) : null);
   }
   function draw() {
+    const mineEmpty = loaded && f.assignee === 'me' && !tickets.length;
     const cols = STATUSES.map((st) => {
       const list = tickets.filter((t) => t.status === st);
-      const col = h('section', { class: 'bcol', 'aria-label': STATUS_LABEL[st] + ', ' + list.length + ' ticket' + (list.length === 1 ? '' : 's'), 'data-status': st },
-        h('header', { class: 'row between' }, h('h2', { text: STATUS_LABEL[st] }), h('span', { class: 'chip none mono', text: list.length })),
-        st === 'done' ? h('div', { class: 'tiny muted', text: 'Last 7 days' }) : null,
-        h('div', { class: 'bcards' }, list.length ? list.map((t) => Card(t, { drag: (k) => { dragging = k; }, reload: load })) : h('div', { class: 'bempty small muted', text: EMPTY_COL[st] })));
-      col.addEventListener('dragover', (e) => { if (dragging) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; col.classList.add('over'); } });
-      col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('over'); });
+      const body = !loaded ? h('div', { class: 'skel', 'aria-busy': 'true', 'aria-label': 'Loading' }, h('i'), h('i'), h('i'))
+        : list.length ? list.map((t) => Card(t, { drag: (d) => { drag = d; if (!d) board.querySelectorAll('.dropph,.over').forEach((x) => (x.classList.contains('dropph') ? x.remove() : x.classList.remove('over'))); }, reload: load, paused: () => offline }))
+        : h('p', { class: 'bempty', text: mineEmpty ? (st === 'review' ? EMPTY_COL.review : 'Nothing here for you') : EMPTY_COL[st] });
+      const col = h('section', { class: 'bcol', 'aria-labelledby': 'col-' + st, 'data-status': st },
+        h('div', { class: 'colhead' }, h('h2', { id: 'col-' + st }, st === 'done' ? icon('check', 12) : h('span', { class: 'mk mk-' + st, 'aria-hidden': 'true' }), STATUS_LABEL[st], st === 'done' ? h('span', { class: 'tiny muted weight5', text: 'Last 7 days' }) : null),
+          h('span', { class: 'mono tiny muted strong', text: loaded ? list.length : '–' })), body);
+      col.addEventListener('dragover', (e) => {
+        if (!drag || offline) return;
+        e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+        if (drag.from === st) return;
+        col.classList.add('over');
+        if (!col.querySelector('.dropph')) col.appendChild(h('div', { class: 'dropph', text: 'Drop to move ' + drag.key + ' to ' + STATUS_LABEL[st] }));
+      });
+      col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) { col.classList.remove('over'); const p = col.querySelector('.dropph'); if (p) p.remove(); } });
       col.addEventListener('drop', async (e) => {
-        e.preventDefault(); col.classList.remove('over');
-        const key = dragging; dragging = null;
-        const t = tickets.find((x) => x.key === key);
-        if (!t || t.status === st) return;
+        e.preventDefault(); col.classList.remove('over'); const ph = col.querySelector('.dropph'); if (ph) ph.remove();
+        const d = drag; drag = null;
+        const t = d && tickets.find((x) => x.key === d.key);
+        if (!t || t.status === st || offline) return;
         const from = t.status;
         t.status = st; draw();                                           // move at once; if the Gatekeeper says no, snap back
-        try { const r = await moveTicket(key, st); Object.assign(t, { status: r.status, can_move: r.can_move, updated_at: r.updated_at, closed_at: r.closed_at }); toast(key + ': ' + from + ' → ' + st); load(); }
-        catch (err) { t.status = from; draw(); toast(err.message, true); }
+        try { const r = await moveTicket(t.key, st); Object.assign(t, { status: r.status, can_move: r.can_move, updated_at: r.updated_at, closed_at: r.closed_at }); toast(t.key + ': ' + STATUS_LABEL[from] + ' → ' + STATUS_LABEL[st]); load(); }
+        catch (err) { t.status = from; draw(); if (!err.signedOut) toast(err.message, true, t.key + ' not moved.'); }
       });
       return col;
     });
     put(board, cols);
+    drawHead();
   }
   async function load() {
     const my = ++seq;
@@ -625,72 +730,91 @@ async function Board(into) {
         const d = await api('/api/tickets?' + pp); all = all.concat(d.tickets); cursor = d.next; if (!cursor) break;
       }
       const sm = await api('/api/tickets/summary');
+      if (f.assignee === 'me' && !all.length && freeKey === null) { const u = await api('/api/tickets?board=1&unassigned=1'); freeKey = (u.tickets[0] && u.tickets[0].key) || ''; }
       if (my !== seq) return;
-      tickets = all; more = !!cursor; summary = sm;
+      tickets = all; more = !!cursor; summary = sm; loaded = true; offline = false; lastOk = Date.now() / 1000;
       all.forEach((t) => (t.labels || []).forEach((l) => labels.add(l)));
-      fillSelects(); drawCounts(); draw();
-    } catch (e) { if (my === seq && !e.signedOut) toast(e.message, true); }
+      fillSelects(); draw();
+    } catch (e) {
+      if (my !== seq || e.signedOut) return;
+      if (e.offline) { offline = true; loaded = loaded || true; draw(); } else toast(e.message, true);
+    }
   }
+  wrap.addEventListener('scroll', () => { const c = board.querySelector('.bcol'); if (c) put(hint, h('span', { text: 'Swipe for more columns' }), h('span', { class: 'mono', text: (Math.round(wrap.scrollLeft / (c.offsetWidth + 12)) + 1) + ' / 4' })); });
+  put(hint, h('span', { text: 'Swipe for more columns' }), h('span', { class: 'mono', text: '1 / 4' }));
   put(into,
     h('div', null, h('h1', { text: 'Board' }), counts),
-    h('div', { class: 'note', role: 'note' }, icon('rooms'), h('p', null, 'Create, assign and close tickets in chat with ', mono('@repo-agent'), '. Drag a card to another column, or use its Move to menu, to change its status.')),
-    form, board);
+    h('div', { class: 'note', role: 'note' }, icon('rooms'), h('p', null, 'Create, assign and close tickets in chat with ', mono('@repo-agent'), ', for example ', mono('@repo-agent track: checkout breaks on mobile'), '. Here you can move cards your role allows.')),
+    bannerBox, form, emptyBox, hint, wrap);
+  draw();
   members = (await api('/api/members')).members;
   await load();
-  every(20000, () => { if (!dragging) load(); });
+  every(20000, () => { if (!drag) load(); });
 }
 
 async function TicketPage(into, key) {
   const t = await api('/api/tickets/' + encodeURIComponent(key));
+  const when = (iso) => { const ts = isoTs(iso); return h('span', { class: 'muted', title: fullTime(ts), text: '· ' + rel(ts) }); };
+  const LINK = { pr: 'Pull request', commit: 'Commit', deploy: 'Deploy', incident: 'Incident', sbom_report: 'SBOM report', alert: 'Alert', ticket: 'Related ticket' };
   const items = [];
   for (const e of t.events || []) {
     if (e.type === 'commented') continue;                                  // the comment itself is shown below
-    const text = { created: 'created the ticket', assigned: 'assigned it to ' + e.to, unassigned: 'unassigned it', status_changed: 'moved it ' + e.from + ' → ' + e.to,
-      priority_changed: 'changed priority ' + e.from + ' → ' + e.to, labels_changed: 'changed labels ' + (e.from || 'none') + ' → ' + (e.to || 'none'), due_changed: 'changed the due date ' + (e.from || 'none') + ' → ' + (e.to || 'none'),
-      linked: 'linked ' + (e.from || '') + ' ' + (e.to || ''), edited: 'edited the ' + (e.to || 'ticket'), closed: 'closed it', reopened: 'reopened it' }[e.type] || e.type;
-    items.push({ at: e.created_at, who: e.actor, text, comment: null });
+    const sys = String(e.actor && e.actor.id || '').startsWith('system:');
+    const lk = e.type === 'linked' ? (e.from === 'pr' ? 'PR #' + e.to : (LINK[e.from] || e.from || 'link') + ' ' + (e.to || '')) : '';
+    const text = { created: 'created this ticket' + (t.room ? ' in ' : ''), assigned: 'assigned ' + e.to, unassigned: 'unassigned it', status_changed: 'moved ' + (STATUS_LABEL[e.from] || e.from) + ' → ' + (STATUS_LABEL[e.to] || e.to),
+      priority_changed: 'changed priority ' + e.from + ' → ' + e.to, labels_changed: 'changed labels ' + (e.from || 'none') + ' → ' + (e.to || 'none'),
+      due_changed: 'changed the due date ' + (e.from ? dueText(e.from) : 'none') + ' → ' + (e.to ? dueText(e.to) : 'none'), linked: 'linked ', edited: 'edited the ' + (e.to || 'ticket'), closed: 'closed it', reopened: 'reopened it' }[e.type] || e.type;
+    items.push({ at: e.created_at, who: e.actor, sys, text, tail: e.type === 'created' && t.room ? mono(t.room) : e.type === 'linked' ? mono(lk) : null, comment: null });
   }
-  for (const c of t.comments || []) items.push({ at: c.created_at, who: c.author, text: 'commented', comment: c.body });
+  for (const c of t.comments || []) items.push({ at: c.created_at, who: c.author, sys: String(c.author && c.author.id || '').startsWith('system:'), text: 'commented', comment: c.body });
   items.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
-  const when = (iso) => { const ts = isoTs(iso); return h('span', { class: 'muted', title: fullTime(ts), text: rel(ts) }); };
-  const LINK = { pr: 'Pull request', commit: 'Commit', deploy: 'Deploy', incident: 'Incident', sbom_report: 'SBOM report', alert: 'Alert', ticket: 'Related ticket' };
-  const linkRow = (l) => {
-    let what;
-    if (l.kind === 'pr') what = [l.url && /^https:\/\//.test(l.url) ? h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer', text: 'PR #' + l.ref }) : h('span', { text: 'PR #' + l.ref }), ' ', l.meta.state ? chip(l.meta.state, 'pr-' + l.meta.state) : null, ' ', l.meta.ci && l.meta.ci !== 'none' ? h('span', { class: 'prmark ci-' + l.meta.ci }, 'CI ' + l.meta.ci + ' ', h('span', { class: 'ci', 'aria-hidden': 'true', text: CI_MARK[l.meta.ci] })) : null];
-    else if (l.kind === 'sbom_report') what = h('a', { href: '#/sbom/' + l.ref, text: l.ref });
-    else if (l.kind === 'ticket') what = h('a', { href: '#/tickets/' + l.ref, text: l.ref });
-    else what = mono(l.ref);
-    return h('li', { class: 'linkrow' }, h('span', { class: 'small muted', text: LINK[l.kind] || l.kind }), h('span', null, what));
+  const sysIcon = (who_) => h('span', { class: 'tlicon', 'aria-hidden': 'true' }, icon(String(who_ && who_.name).includes('github') ? 'pr' : 'bolt', 14));
+  const row = (i) => h('li', { class: 'tl' }, i.sys ? sysIcon(i.who) : avatar(i.who, 'sm'),
+    h('div', { class: 'tlbody' }, h('div', { class: 'tlline' }, h('strong', { text: plainName(i.who) }), ' ', i.text, i.tail ? [' ', i.tail] : null, ' ', when(i.at)), i.comment ? h('p', { class: 'bubble', text: i.comment }) : null));
+  const group = (kind) => {
+    const ls = (t.links || []).filter((l) => l.kind === kind);
+    if (!ls.length) return null;
+    return h('div', { class: 'lgroup' }, h('h3', { text: LINK[kind] }), ls.map((l) => {
+      if (kind === 'pr') return h('div', { class: 'lrow' }, l.url && /^https:\/\//.test(l.url) ? h('a', { class: 'mono', href: l.url, target: '_blank', rel: 'noopener noreferrer', text: 'PR #' + l.ref }) : mono('PR #' + l.ref), h('span', { class: 'muted', text: (l.meta && l.meta.state) || '' }), h('span', { class: 'grow' }), ciMark(l.meta && l.meta.ci));
+      if (kind === 'sbom_report') return h('div', { class: 'lrow' }, h('a', { class: 'mono', href: '#/sbom/' + l.ref, text: l.ref }));
+      if (kind === 'ticket') return h('div', { class: 'lrow' }, h('a', { class: 'mono', href: '#/tickets/' + l.ref, text: l.ref }));
+      return h('div', { class: 'lrow' }, mono(kind === 'commit' ? l.ref.slice(0, 7) : l.ref));
+    }));
   };
+  const menuBtn = h('button', { class: 'btn', type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false', onclick: () => openMoveMenu(menuBtn, t, () => route()) }, 'Move to', icon('chevron', 14));
+  const copy = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Copy ticket key' }, icon('copy', 14));
+  copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(t.key); toast('Copied ' + t.key); } catch (e) { toast('Copy failed: select the key instead', true); } });
+  const links = ['pr', 'commit', 'deploy', 'incident', 'sbom_report', 'alert', 'ticket'].map(group).filter(Boolean);
+  const dd = (label, ...kids) => h('div', { class: 'dditem' }, h('dt', { text: label }), h('dd', null, ...kids));
   put(into,
-    h('p', { class: 'small' }, h('a', { href: '#/board', text: '← Board' })),
-    h('div', { class: 'col' }, h('div', { class: 'row' }, mono(t.key, 'tkey'), statusChip(t.status), prioChip(t.priority), autoBadge(t), dueEl(t)), h('h1', { class: 'tkh', text: t.title }),
-      h('div', { class: 'row' }, h('span', { class: 'muted small', text: 'Assignee' }), who(t.assignee), h('span', { class: 'vsep' }), h('span', { class: 'muted small', text: 'Reporter' }), who(t.reporter),
-        (t.labels || []).length ? [h('span', { class: 'vsep' }), (t.labels || []).map((l) => h('span', { class: 'label', text: l }))] : null),
-      h('div', { class: 'row' }, moveMenu(t, () => route()), t.room_url ? h('a', { class: 'btn', href: t.room_url, target: '_blank', rel: 'noopener noreferrer', text: 'Open in chat' + (t.room ? ' · ' + t.room : '') })
-        : t.room ? h('span', { class: 'small muted', text: 'Created in ' + t.room }) : null)),
-    h('div', { class: 'split aside' },
+    h('p', null, h('a', { class: 'backlink', href: '#/board', text: '← Board' })),
+    h('section', { class: 'tkhead', 'aria-label': 'Ticket' },
+      h('div', { class: 'row between' }, h('div', { class: 'row tight' }, h('span', { class: 'row tight' }, mono(t.key, 'tkeyh'), copy), statusPill(t.status), prioChip(t.priority), autoBadge(t), t.overdue ? h('span', { class: 'mono overdue-chip', text: 'overdue · due ' + dueText(t.due_on) }) : t.due_on ? h('span', { class: 'mono tiny muted', text: 'due ' + dueText(t.due_on) }) : null),
+        h('div', { class: 'row tight' }, menuBtn, t.room_url ? h('a', { class: 'btn outline', href: t.room_url, target: '_blank', rel: 'noopener noreferrer' }, icon('rooms', 14), 'Open in chat') : null)),
+      h('h1', { class: 'tkh', text: t.title }),
+      h('dl', { class: 'dlrow' }, dd('Assignee', who(t.assignee)), dd('Reporter', who(t.reporter)), (t.labels || []).length ? dd('Labels', h('span', { class: 'row tight' }, t.labels.map(labelTag))) : null,
+        dd('Created', h('span', { class: 'muted', title: fullTime(isoTs(t.created_at)), text: dayWord(isoTs(t.created_at)) }), t.room ? [' in ', mono(t.room)] : null))),
+    h('div', { class: 'tcols' },
       h('div', { class: 'col' },
-        h('section', { class: 'card col', 'aria-label': 'Description' }, h('h2', { text: 'Description' }), t.body ? h('div', { class: 'tbody', text: t.body }) : h('p', { class: 'small muted', text: 'No description.' })),
-        h('section', { class: 'col', 'aria-label': 'Timeline' }, h('h2', { text: 'Timeline' }),
-          items.length ? h('ol', { class: 'timeline' }, items.map((i) => h('li', { class: i.comment ? 'tl comment' : 'tl' },
-            h('div', { class: 'row tight small' }, h('strong', { text: (i.who && i.who.name) || 'someone' }), h('span', { text: i.text }), when(i.at)), i.comment ? h('div', { class: 'tbody', text: i.comment }) : null))) : empty('Nothing yet', 'Changes and comments appear here.'))),
-      h('aside', { 'aria-label': 'Links', class: 'card col' }, h('h2', { text: 'Links' }),
-        (t.links || []).length ? h('ul', { class: 'linklist' }, t.links.map(linkRow)) : h('p', { class: 'small muted', text: 'Nothing linked yet. A pull request that says Fixes ' + t.key + ' links itself.' }),
-        h('div', { class: 'tiny muted', text: 'Opened ' + fullTime(isoTs(t.created_at)) }))),
-    h('p', { class: 'small muted', text: 'Create, assign, edit and comment in chat with @repo-agent. This page shows the ticket and moves its status.' }));
+        h('section', { class: 'panel', 'aria-labelledby': 'desc' }, h('h2', { id: 'desc', text: 'Description' }), t.body ? h('p', { class: 'tbody', text: t.body }) : h('p', { class: 'small muted', text: 'No description.' })),
+        h('section', { class: 'panel', 'aria-labelledby': 'tl' }, h('h2', { id: 'tl', text: 'Timeline' }), items.length ? h('ol', { class: 'timeline' }, items.map(row)) : h('p', { class: 'small muted', text: 'Changes and comments appear here.' }))),
+      h('section', { class: 'panel links', 'aria-labelledby': 'links' }, h('h2', { id: 'links', text: 'Links' }),
+        links.length ? links : h('div', { class: 'nolinks' }, h('div', { class: 'strong', text: 'No links yet' }), h('div', { class: 'small muted' }, 'Write ', mono('Fixes ' + t.key), ' in a PR, or use ', mono('@repo-agent link ' + t.key + ' to PR #26'), '.')))));
 }
 
 // the Overview block: the caller's own open tickets, and the briefing's one-line first step
 function MyTickets(b) {
-  const s = b.summary;
-  return h('section', { class: 'card col', 'aria-label': 'My tickets' },
-    h('div', { class: 'row between' }, h('h2', { text: 'My tickets' }), h('a', { href: '#/board', text: 'Open the Board' })),
-    h('p', { class: 'small muted', text: s.open + ' open on the Board · ' + s.overdue + ' overdue · ' + s.unassigned + ' unassigned · ' + b.mine_total + ' assigned to you' }),
-    b.mine.length ? h('ul', { class: 'mylist' }, b.mine.map((t) => h('li', null, h('a', { class: 'trow', href: '#/tickets/' + t.key }, mono(t.key, 'tkey'), h('span', { class: 'ttl', text: t.title }), statusChip(t.status), prioChip(t.priority), dueEl(t)))),
-      b.mine_total > b.mine.length ? h('li', { class: 'small muted', text: 'and ' + (b.mine_total - b.mine.length) + ' more' }) : null)
-      : h('p', { class: 'small muted', text: 'Nothing is assigned to you.' }),
-    h('div', { class: 'note', role: 'note' }, icon('check'), h('p', null, h('strong', { text: 'First step: ' }), b.first_step)));
+  const parts = [b.mine_total + ' open'];
+  if (b.mine_overdue) parts.push(b.mine_overdue + ' overdue');
+  if (b.mine_review) parts.push(b.mine_review + ' in review');
+  return h('section', { class: 'card mycard', 'aria-labelledby': 'mine' },
+    h('div', { class: 'row between' }, h('div', { class: 'row tight' }, h('h2', { id: 'mine', text: 'My tickets' }), h('span', { class: 'small muted', text: parts.join(' · ') })), h('a', { href: '#/board', text: 'Open the Board' })),
+    b.mine.length ? [h('div', { class: 'note', role: 'note' }, icon('arrow'), h('p', null, h('strong', { text: 'First step: ' }), b.first_step)),
+      h('div', { class: 'mylist' }, b.mine.map((t) => h('a', { class: 'trow', href: '#/tickets/' + t.key }, mono(t.key, 'tk'), h('span', { class: 'ttl', text: t.title }), prioChip(t.priority), statusPill(t.status),
+        h('span', { class: 'mono due2' + (t.overdue ? ' overdue' : ''), text: t.overdue ? 'Overdue' : t.due_on ? dueText(t.due_on) : '—' })))),
+      b.mine_total > b.mine.length ? h('p', { class: 'small muted', text: 'and ' + (b.mine_total - b.mine.length) + ' more on the Board' }) : null]
+      : h('div', { class: 'empty dashed' }, h('div', { class: 'strong', text: 'Nothing assigned to you' }),
+        h('div', { class: 'small muted' }, 'Take one with ', mono('@repo-agent take ' + (b.unassigned_key || 'SY-1')), ', or see what’s unassigned on the ', h('a', { href: '#/board', text: 'Board' }), '.')));
 }
 
 // ---- router -------------------------------------------------------------------------------------------------------
