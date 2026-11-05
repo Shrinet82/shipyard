@@ -23,7 +23,10 @@ TOOL = {
         "asked you. You hold no write access yourself. Cite `message_id`, the id of that person's message. "
         "Reads run at once; deploys, restarts and rollbacks are posted in the room for a person to approve, so "
         "tell them the approval id and do not retry. Actions: coolify.status, coolify.deploy, coolify.restart, "
-        "coolify.rollback, repo.pr_list (target: any word), repo.pr_status (target: the PR number). You cannot merge."
+        "coolify.rollback, repo.pr_list (target: any word), repo.pr_status (target: the PR number), and k8s.exec or "
+        "coolify.exec (target: the application; args {\"argv\": [\"tail\", \"-n\", \"50\", \"/var/log/app.log\"]}) to run one "
+        "read-only diagnostic inside its container or pod: ls, cat, tail, grep, ps, df, curl http://localhost:PORT/health and the like. "
+        "Files that hold credentials are refused. You cannot merge."
     ),
     "inputSchema": {
         "type": "object",
@@ -38,7 +41,8 @@ TOOL = {
     },
     "annotations": {"readOnlyHint": False, "destructiveHint": False},
 }
-ALLOWED_ACTIONS = {"coolify.status", "coolify.deploy", "coolify.restart", "coolify.rollback", "repo.pr_list", "repo.pr_status"}
+ALLOWED_ACTIONS = {"coolify.status", "coolify.deploy", "coolify.restart", "coolify.rollback", "repo.pr_list", "repo.pr_status",
+                   "k8s.exec", "coolify.exec"}
 
 
 def make_handler(service: Service, token: str):

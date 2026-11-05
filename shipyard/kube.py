@@ -14,7 +14,7 @@ import re
 import subprocess
 from typing import Callable, Sequence
 
-from .shellrules import Refused, check_pod
+from .shellrules import Refused, check_container
 
 NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
 
@@ -143,7 +143,7 @@ class Kube:
 
     def exec(self, namespace: str, name: str, argv: Sequence[str]) -> list[str]:
         try:
-            argv = check_pod(argv)
+            argv = check_container(argv)                               # first the rule itself, with nothing touched yet
         except Refused as exc:
             raise KubeError(str(exc)) from None
         pods = [p["metadata"]["name"] for p in self._pods(namespace, self._deployment(namespace, name))
@@ -151,5 +151,13 @@ class Kube:
         if not pods:
             raise KubeError("no running pod to exec into")
         self._check(pod=pods[0])
+
+        def resolve(path: str) -> str:                                 # symlinks are followed inside the pod and judged again
+            lines = self._kubectl("ops", namespace, ["exec", pods[0], "--", "readlink", "-f", path], timeout=10).splitlines()
+            return lines[0].strip() if lines else ""
+        try:
+            check_container(argv, resolve)
+        except Refused as exc:
+            raise KubeError(str(exc)) from None
         out = self._kubectl("ops", namespace, ["exec", pods[0], "--", *argv], timeout=20)
         return out.splitlines()

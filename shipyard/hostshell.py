@@ -6,10 +6,11 @@ So the check here is the first of two; a stolen key never gets further than the 
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import Callable, Sequence
 
-from .shellrules import Refused, check_host
+from .shellrules import Refused, check_container, check_host
 
 
 class ShellError(Exception):
@@ -35,15 +36,29 @@ class HostShell:
         self._run = runner or _runner
 
     def run(self, host: str, argv: Sequence[str]) -> list[str]:
-        cfg = self.hosts.get(host)
-        if cfg is None:
-            raise ShellError(f"unknown host {host!r}")
         try:
             argv = check_host(argv)
         except Refused as exc:
             raise ShellError(str(exc)) from None
+        return self._ssh(host, " ".join(argv))
+
+    def container_exec(self, host: str, app_uuid: str, argv: Sequence[str]) -> list[str]:
+        """Run an allowlisted diagnostic inside a Coolify application's container, through the same forced-command key. The far side
+        finds the container from the application's uuid, resolves symlinks inside it and applies the same rules again."""
+        if not re.fullmatch(r"[a-z0-9]{20,32}", app_uuid):
+            raise ShellError("that is not a Coolify application id")
+        try:
+            argv = check_container(argv)
+        except Refused as exc:
+            raise ShellError(str(exc)) from None
+        return self._ssh(host, f"container-exec {app_uuid} " + " ".join(argv))
+
+    def _ssh(self, host: str, remote: str) -> list[str]:
+        cfg = self.hosts.get(host)
+        if cfg is None:
+            raise ShellError(f"unknown host {host!r}")
         cmd = ["ssh", "-i", cfg["key_file"], "-p", str(cfg.get("port", 22)), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
-               "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", cfg["ssh"], "--", " ".join(argv)]
+               "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", cfg["ssh"], "--", remote]
         rc, out, err = self._run(cmd, self.timeout)
         if rc != 0:
             raise ShellError((err.strip().splitlines() or [f"the command exited with status {rc}"])[-1][:300])

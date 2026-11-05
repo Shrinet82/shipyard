@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the restricted diagnostics account on the production VM. Run there as a sudo-capable user:
 #   sudo bash install.sh "<public key line>" <allowed-source-ip>
-# Creates `shipyard-ops` (no sudo, no groups, no password), installs the wrapper and the allowlist, and pins
+# Creates `shipyard-ops` (no groups, no password, sudo only for the container helper), installs the wrapper, the helper and the allowlist, and pins
 # the account in sshd to the forced command with no tty and no forwarding.
 set -euo pipefail
 PUBKEY=${1:?public key line}; FROM=${2:?address the Gatekeeper connects from}
@@ -11,6 +11,10 @@ passwd -l shipyard-ops >/dev/null
 install -d -m 755 /usr/local/lib/shipyard-ops
 install -m 644 -o root -g root "$HERE/shellrules.py" /usr/local/lib/shipyard-ops/shellrules.py
 install -m 755 -o root -g root "$HERE/shipyard-ops-shell" /usr/local/bin/shipyard-ops-shell
+install -m 755 -o root -g root "$HERE/shipyard-container-exec" /usr/local/sbin/shipyard-container-exec
+# the one thing the account may do as root: run that helper, which validates everything itself (needs docker on this machine)
+printf 'shipyard-ops ALL=(root) NOPASSWD: /usr/local/sbin/shipyard-container-exec *\n' > /etc/sudoers.d/shipyard-ops
+chmod 440 /etc/sudoers.d/shipyard-ops; visudo -cf /etc/sudoers.d/shipyard-ops >/dev/null
 install -d -m 700 -o shipyard-ops -g shipyard-ops /home/shipyard-ops/.ssh
 printf 'command="/usr/local/bin/shipyard-ops-shell",from="%s",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-user-rc %s\n' \
   "$FROM" "$PUBKEY" > /home/shipyard-ops/.ssh/authorized_keys

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Forced command for the shipyard-ops SSH key. Runs ONE allowlisted read-only diagnostic and exits.
+"""Forced command for the shipyard-ops SSH key. Runs ONE allowlisted read-only diagnostic and exits: on this machine, or (as
+`container-exec <uuid> <command>`) inside a Coolify application's container through a root helper that sudo allows for this account only.
 
 sshd runs this instead of whatever the client asked for and hands the client's request over in
 SSH_ORIGINAL_COMMAND. We apply the same allowlist as the Gatekeeper (symlinks resolved here), run the command as
@@ -12,10 +13,33 @@ import sys
 import syslog
 
 sys.path.insert(0, "/usr/local/lib/shipyard-ops")
-from shellrules import Refused, check_host  # noqa: E402
+from shellrules import Refused, check_container, check_host  # noqa: E402
 
 TIMEOUT = 20
 MAX_OUT = 20000
+
+
+def container_exec(parts, who) -> int:
+    """Check the request here, then hand it to the root helper, which checks it again inside the container."""
+    import re
+    try:
+        if len(parts) < 2 or not re.fullmatch(r"[a-z0-9]{20,32}", parts[0]):
+            raise Refused("usage: container-exec <application uuid> <command...>")
+        check_container(parts[1:])
+    except Refused as exc:
+        syslog.syslog(syslog.LOG_WARNING, f"refused container-exec {' '.join(parts)[:200]!r} from {who}: {exc}")
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    syslog.syslog(syslog.LOG_INFO, f"container-exec {' '.join(parts)!r} from {who}")
+    try:
+        p = subprocess.run(["sudo", "-n", "/usr/local/sbin/shipyard-container-exec", *parts], capture_output=True, text=True, timeout=TIMEOUT + 15,
+                           shell=False, cwd="/", stdin=subprocess.DEVNULL, env={"PATH": "/usr/bin:/bin", "LANG": "C"})
+    except subprocess.TimeoutExpired:
+        print("refused: the command took too long", file=sys.stderr)
+        return 3
+    sys.stdout.write(p.stdout[:MAX_OUT])
+    sys.stderr.write(p.stderr[:2000])
+    return p.returncode
 
 
 def main() -> int:
@@ -26,6 +50,9 @@ def main() -> int:
         syslog.syslog(syslog.LOG_WARNING, f"refused (no command) from {who}")
         print("refused: this key runs one allowlisted command per connection", file=sys.stderr)
         return 2
+    parts = original.split()
+    if parts and parts[0] == "container-exec":                  # `container-exec <application uuid> <command...>`: inside an app's container
+        return container_exec(parts[1:], who)
     try:
         argv = check_host(original.split(), resolve=os.path.realpath)
     except Refused as exc:

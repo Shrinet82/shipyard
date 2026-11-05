@@ -222,6 +222,33 @@ class GitHubApp:
     def branch_head(self, repo: str, branch: str) -> str:
         return self._call("GET", f"/repos/{repo}/branches/{branch}")["commit"]["sha"]
 
+    def pr_head(self, repo: str, number: int) -> dict[str, Any]:
+        """The branch a pull request comes from: {ref, repo, sha, state, draft, base}."""
+        d = self._call("GET", f"/repos/{repo}/pulls/{number}")
+        head = d["head"]
+        return {"ref": head["ref"], "repo": (head.get("repo") or {}).get("full_name", ""), "sha": head["sha"], "state": d["state"],
+                "draft": bool(d.get("draft")), "base": d["base"]["ref"], "merged": bool(d.get("merged"))}
+
+    def review_comments(self, repo: str, number: int) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for page in range(1, 6):                                    # at most 500 comments
+            rows = self._call("GET", f"/repos/{repo}/pulls/{number}/comments?per_page=100&page={page}")
+            out += rows
+            if len(rows) < 100:
+                break
+        return out
+
+    def file_at(self, repo: str, path: str, ref: str) -> dict[str, Any]:
+        from urllib.parse import quote
+        return self._call("GET", f"/repos/{repo}/contents/{quote(path)}?ref={quote(ref, safe='')}")
+
+    def put_file(self, repo: str, path: str, branch: str, message: str, content: bytes, blob_sha: str) -> str:
+        """Commit new content for one file on `branch`. GitHub refuses (409) if the file changed since `blob_sha`. Returns the commit sha."""
+        from urllib.parse import quote
+        data = self._call("PUT", f"/repos/{repo}/contents/{quote(path)}",
+                          {"message": message, "content": base64.b64encode(content).decode(), "sha": blob_sha, "branch": branch})
+        return str(data["commit"]["sha"])
+
     def tag_commit(self, repo: str, tag: str) -> str:
         """The commit a tag points at (annotated tags are followed one step)."""
         obj = self._call("GET", f"/repos/{repo}/git/ref/tags/{tag}")["object"]

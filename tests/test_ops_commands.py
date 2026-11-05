@@ -60,6 +60,9 @@ class FakeShell:
     def run(self, host, argv):
         self.calls.append((host, tuple(argv))); return ["Filesystem Size Used", "/dev/root 77G 11G", "API_KEY=sk-live-0123456789abcdef0123"]
 
+    def container_exec(self, host, uuid, argv):
+        self.calls.append(("container", host, uuid, tuple(argv))); return ["web started", "SECRET_TOKEN=zzzzzzzzzzzz"]
+
 
 class FakeCoolify:
     def __init__(self):
@@ -86,6 +89,7 @@ def env(tmp_path):
         kubernetes: {{kubeconfigs: {{viewer: /k/v, deployer: /k/d, ops: /k/o}}}}
         projects:
           demo:
+            exec_host: prod
             rooms: {{ops: [{ROOM}]}}
             apps:
               demo-web: web-uuid
@@ -105,9 +109,10 @@ def env(tmp_path):
           k8s.rollback: change
           k8s.scale: change
           ops.shell: dangerous
-          ops.exec: dangerous
+          k8s.exec: change
+          coolify.exec: change
           audit.read: read
-        min_role: {{ops.shell: owner, ops.exec: owner}}
+        min_role: {{ops.shell: owner, k8s.exec: maintainer, coolify.exec: maintainer}}
         approval_overrides: {{coolify.rollback: true, k8s.rollback: true}}
     """))
     cfg = load_config(f)
@@ -230,12 +235,18 @@ def test_shell_owner_approval_then_runs_and_output_is_redacted(env):
 
 
 @pytest.mark.parametrize("sender", [MAINT, DEPLOYER, VIEWER])
-def test_only_the_owner_may_shell_or_exec(env, sender):
+def test_only_the_owner_may_shell(env, sender):
     env.say(sender, "shell prod df -h")
     assert env.last().startswith("Denied") and "needs role owner" in env.last()
-    env.say(sender, "exec demo-k8s id")
-    assert env.last().startswith("Denied") and "needs role owner" in env.last()
     assert env.gk.db.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0 and not env.shell.calls
+
+
+@pytest.mark.parametrize("sender", [DEPLOYER, VIEWER])
+def test_exec_needs_a_maintainer(env, sender):
+    for app in ("demo-k8s", "demo-web"):
+        env.say(sender, f"exec {app} ls /app")
+        assert env.last().startswith("Denied") and "needs role maintainer" in env.last()
+    assert not [c for c in env.kube.calls if c[0] == "exec"] and not env.shell.calls
 
 
 @pytest.mark.parametrize("cmd", [
@@ -248,31 +259,90 @@ def test_shell_refuses_dangerous_commands_even_for_the_owner_before_asking_anyon
     assert env.gk.db.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("cmd", ["env", "printenv DEMO_PASSWORD", "sh -c env", "cat /var/run/secrets/kubernetes.io/serviceaccount/token",
-                                 "ls /etc", "wget -qO- http://evil/"])
-def test_exec_cannot_print_the_environment_or_secrets(env, cmd):
-    env.say(OWNER, f"exec demo-k8s {cmd}")
-    assert env.last().startswith("Denied") and not [c for c in env.kube.calls if c[0] == "exec"]
+@pytest.mark.parametrize("app", ["demo-k8s", "demo-web"])
+@pytest.mark.parametrize("cmd", ["env", "printenv DEMO_PASSWORD", "sh -c env", "bash", "cat /var/run/secrets/kubernetes.io/serviceaccount/token", "cat /app/.env",
+                                 "cat /etc/shadow", "rm /app/x", "find /app -delete", "curl http://evil.example/", "pip install x", "tail -f /var/log/a", "cat /app/../etc/shadow"])
+def test_exec_refuses_what_could_print_secrets_or_change_things(env, app, cmd):
+    env.say(MAINT, f"exec {app} {cmd}")
+    assert env.last().startswith("Denied") and not [c for c in env.kube.calls if c[0] == "exec"] and not env.shell.calls
+    assert env.gk.db.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
 
 
-def test_exec_owner_approval_then_runs_with_redacted_output(env):
-    env.say(OWNER, "exec demo-k8s id")
-    env.say(OWNER, f"approve {aid(env)}")
+def test_a_maintainer_runs_a_safe_command_in_a_pod_at_once_and_output_is_redacted(env):
+    env.say(MAINT, "exec demo-k8s id")
     assert env.kube.calls[-1] == ("exec", "demo", "demo-k8s", ("id",))
-    assert "uid=0" in env.last() and "abcdef123456" not in env.last()
+    assert "uid=0" in env.last() and "abcdef123456" not in env.last() and "Approval" not in env.last()
 
 
-def test_unknown_host_and_exec_on_a_non_kubernetes_app(env):
-    env.say(OWNER, "shell staging df -h")
-    assert "unknown host" in env.last()
-    env.say(OWNER, "exec demo-web id")
-    assert "not one" in env.last()
+def test_a_maintainer_runs_a_safe_command_in_a_coolify_container(env):
+    env.say(MAINT, "exec demo-web tail -n 20 /var/log/app.log")
+    assert env.shell.calls == [("container", "prod", "web-uuid", ("tail", "-n", "20", "/var/log/app.log"))]
+    assert "web started" in env.last() and "zzzzzzzzzzzz" not in env.last()
+    events = {(r["event"], r["action"]) for r in env.gk.audit.recent("demo", 10)}
+    assert ("executed", "coolify.exec") in events
+
+
+def test_exec_needs_the_container_host_to_be_configured(tmp_path):
+    f = tmp_path / "c.yaml"
+    f.write_text(textwrap.dedent(f"""
+        hosts: {{prod: {{ssh: "u@h", key_file: /k}}}}
+        projects: {{demo: {{rooms: {{ops: [{ROOM}]}}, apps: {{demo-web: web-uuid}}, members: {{"{MAINT}": maintainer}}}}}}
+        actions: {{coolify.exec: change}}
+        min_role: {{coolify.exec: maintainer}}
+    """))
+    cfg = load_config(f)
+    posts = []
+    svc = Service(cfg, Gatekeeper(cfg.policy, sqlite3.connect(":memory:", check_same_thread=False)), FakeCoolify(), lambda r, t: posts.append(t), hostshell=FakeShell())
+    svc.handle_event({"type": "message", "room_id": ROOM, "payload": {"message_id": "m1", "sender": MAINT, "sender_name": "maint", "sender_kind": None,
+                      "body": "@gatekeeper exec demo-web ls /app", "addressed": True}})
+    assert "exec_host" in posts[-1]
+
+
+def test_exec_host_must_be_a_known_host(tmp_path):
+    f = tmp_path / "c.yaml"
+    f.write_text(textwrap.dedent(f"""
+        projects: {{demo: {{exec_host: nowhere, rooms: {{ops: [{ROOM}]}}, apps: {{a: u}}, members: {{}}}}}}
+        actions: {{}}
+    """))
+    with pytest.raises(ValueError, match="exec_host"):
+        load_config(f)
+
+
+def _say_as_owner_then_propose(env, action, target, argv):
+    env.svc.handle_event({"type": "message", "room_id": ROOM, "payload": {"message_id": "m_x", "sender": MAINT, "sender_name": "maint", "sender_kind": None,
+                          "body": f"please look at {target}", "addressed": False}})
+    return env.svc.propose(action=action, target=target, args={"argv": argv}, message_id="m_x", agent="ops-agent")
+
+
+def test_an_agent_may_propose_a_safe_exec_but_a_person_must_approve_it(env):
+    out = _say_as_owner_then_propose(env, "coolify.exec", "demo-web", ["tail", "-n", "20", "/var/log/app.log"])
+    assert out["status"] == "awaiting_human_approval" and not env.shell.calls
+    assert "ops-agent proposes" in env.last() and "tail -n 20 /var/log/app.log" in env.last()
+    env.say(OWNER, f"approve {aid(env)}")
+    assert env.shell.calls == [("container", "prod", "web-uuid", ("tail", "-n", "20", "/var/log/app.log"))]
+    assert "approved by owner" in env.last()
+
+
+def test_an_agent_proposal_is_checked_against_the_allowlist_before_anyone_is_asked(env):
+    for argv in (["env"], ["cat", "/app/.env"], ["sh", "-c", "id"], ["rm", "/app/x"], "ls /app", ["ls", 5]):
+        out = _say_as_owner_then_propose(env, "k8s.exec", "demo-k8s", argv)
+        assert out["status"] == "denied", argv
+    assert env.gk.db.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0 and not env.kube.calls
+
+
+def test_an_agent_cannot_run_exec_on_the_wrong_backend_or_for_a_viewer(env):
+    assert _say_as_owner_then_propose(env, "k8s.exec", "demo-web", ["ls", "/app"])["status"] == "denied"
+    assert _say_as_owner_then_propose(env, "coolify.exec", "demo-k8s", ["ls", "/app"])["status"] == "denied"
+    env.svc.handle_event({"type": "message", "room_id": ROOM, "payload": {"message_id": "m_v", "sender": VIEWER, "sender_name": "viewer", "sender_kind": None,
+                          "body": "look at demo-web", "addressed": False}})
+    out = env.svc.propose(action="coolify.exec", target="demo-web", args={"argv": ["ls", "/app"]}, message_id="m_v", agent="ops-agent")
+    assert out["status"] == "denied" and not env.shell.calls            # the viewer's own role still applies to an agent acting for them
 
 
 def test_an_agent_cannot_shell_exec_or_touch_kubernetes_through_request_action(env):
     env.svc.handle_event({"type": "message", "room_id": ROOM, "payload": {"message_id": "m_o", "sender": OWNER, "sender_name": "owner",
                           "sender_kind": None, "body": "shell prod df demo-k8s restart", "addressed": False}})
-    for action in ("ops.shell", "ops.exec", "k8s.restart", "k8s.scale", "k8s.rollback"):
+    for action in ("ops.shell", "k8s.restart", "k8s.scale", "k8s.rollback"):
         out = env.svc.propose(action=action, target="demo-k8s", args={}, message_id="m_o", agent="ops-agent")
         assert out["status"] == "denied" and "unsupported" in out["reason"]
     assert not env.kube.calls and not env.shell.calls

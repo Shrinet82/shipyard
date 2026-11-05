@@ -22,7 +22,8 @@ from .hostshell import ShellError
 from .kube import KubeError
 from .policy import Verdict, evaluate
 from .sbom import _t, gate_reasons, rebase, summary as sbom_summary
-from .shellrules import Refused, check_host, check_pod
+from . import suggestions as sg
+from .shellrules import Refused, check_container, check_host
 
 # commands that act on an app: the action depends on the app's backend
 APP_ACTIONS = {
@@ -46,6 +47,8 @@ ACTION_FOR_VERB = {
     "rollback": "coolify.rollback",
     "audit": "audit.read",
     "sbom": "sbom.read",
+    "suggestions": "repo.suggestions",
+    "apply-suggestion": "repo.apply_suggestion",
 }
 # "@switch-<platform>-<bridge uuid>-<account name>:<server>" -> the account name
 _SENDER = re.compile(r"^@switch-[a-z]+-[0-9a-f-]{36}-(?P<name>.+):[^:]+$")
@@ -146,6 +149,10 @@ class Service:
             return self._sbom(project, room, sender, cmd)
         if cmd.verb == "dashboard-login":
             return self._dashboard_login(project, sender, cmd)
+        if cmd.verb == "suggestions":
+            return self._suggestions(project, room, sender, cmd)
+        if cmd.verb == "apply-suggestion":
+            return self._apply_suggestion(project, room, sender, cmd)
         if cmd.verb in ("logs", "events"):
             return self._read_ops(project, room, sender, cmd)
         if cmd.verb in ("shell", "exec"):
@@ -348,6 +355,148 @@ class Service:
         label = label or (f"PR #{report['pr']}" if report.get("pr") else report.get("ref") or None)
         return sbom_summary(rebase(report, store.baseline(project.name, repo.app)), label)
 
+    # -- reviewer suggestions ---------------------------------------------------
+
+    def _suggestion_state(self, project: Project, number: int):
+        """(head, suggestions, left out, blocker). A blocker means nothing may be applied to this pull request."""
+        repo = project.repo
+        head = self.github.pr_head(repo.name, number)
+        if head["state"] != "open":
+            return head, [], [], f"PR #{number} is {head['state']}"
+        if head["repo"].lower() != repo.name.lower():
+            return head, [], [], "it comes from a fork, and the Gatekeeper only writes to branches of this repository"
+        if head["ref"] == repo.branch:
+            return head, [], [], f"its branch is {repo.branch} itself"
+        usable, left_out = sg.parse(self.github.review_comments(repo.name, number), head["sha"])
+        return head, usable, left_out, None
+
+    def _picked(self, usable: list, spec: str):
+        if spec.lower() == "all":
+            return list(usable)
+        picked = []
+        for tok in spec.split(","):
+            if not tok.isdigit() or not 1 <= int(tok) <= len(usable):
+                return None
+            picked.append(usable[int(tok) - 1])
+        return sorted(set(picked), key=lambda x: x.id)
+
+    def _suggestions(self, project: Project, room: str, sender: str, cmd: Command) -> str:
+        number = cmd.args[0]
+        if not self._is_member(project, sender):
+            return self._deny(project, sender, "repo.suggestions", number, "you are not a member of this project")
+        if not number.isdigit():
+            return f"Usage: {USAGE['suggestions']}"
+        out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action="repo.suggestions", target=number,
+                                     room_id=room, name=self._name(sender))
+        if out.status != "allowed":
+            return f"Denied: {out.reason}."
+        if (msg := self._repo_ready(project)):
+            return msg
+        try:
+            head, usable, left_out, blocker = self._suggestion_state(project, int(number))
+            if blocker:
+                return f"Nothing to apply: {blocker}."
+            lines = [f"Suggestions on PR #{number} (head {head['sha'][:7]}), written by reviewers:"]
+            for i, s in enumerate(usable, 1):
+                old = sg.decode(self.github.file_at(project.repo.name, s.path, head["sha"])).split("\n")
+                lines.append(f"{i}. #{s.id} by {_t(s.author, 40)}")
+                lines += sg.preview(s, old)
+        except (GitHubError, sg.SuggestionError) as exc:
+            return f"Could not read the suggestions: {exc}"
+        if not usable:
+            lines = [f"No applicable suggestions on PR #{number}."]
+        text = lines[0] + "\n" + fenced(clean_lines(lines[1:], 60)) if usable else lines[0]
+        if left_out:
+            text += "\nLeft out:\n" + "\n".join("- " + _t(x, 160) for x in left_out[:5])
+        return text + (f"\nTo apply: `@gatekeeper apply-suggestion {number} <n|n,n|all>` (a maintainer asks, a second person approves)." if usable else "")
+
+    def _apply_suggestion(self, project: Project, room: str, sender: str, cmd: Command) -> str:
+        number, spec = cmd.args
+        who = self._name(sender)
+        if not self._is_member(project, sender):
+            return self._deny(project, sender, "repo.apply_suggestion", number, "you are not a member of this project")
+        if not number.isdigit():
+            return f"Usage: {USAGE['apply-suggestion']}"
+        if (msg := self._repo_ready(project)):
+            return msg
+        d = evaluate(self.cfg.policy, project=project.name, identity=sender, is_human=True, action="repo.apply_suggestion", target=number)
+        if d.verdict is Verdict.DENY:
+            return self._deny(project, sender, "repo.apply_suggestion", number, d.reason, name=who)
+        try:
+            head, usable, left_out, blocker = self._suggestion_state(project, int(number))
+            picked = None if blocker else self._picked(usable, spec)
+            if blocker:
+                return self._deny(project, sender, "repo.apply_suggestion", number, blocker, name=who)
+            if not picked:
+                return f"Say which: `suggestions {number}` lists them, then `apply-suggestion {number} 1`, `1,2` or `all`."
+            previews = []
+            for s in picked:
+                old = sg.decode(self.github.file_at(project.repo.name, s.path, head["sha"])).split("\n")
+                previews += sg.preview(s, old)
+            sg.apply_to_text(sg.decode(self.github.file_at(project.repo.name, picked[0].path, head["sha"])),
+                             [s for s in picked if s.path == picked[0].path])            # fails now, not after approval, if they overlap
+        except sg.SuggestionError as exc:
+            return self._deny(project, sender, "repo.apply_suggestion", number, str(exc), name=who)
+        except GitHubError as exc:
+            return self._deny(project, sender, "repo.apply_suggestion", number, f"could not read the pull request ({exc})", name=who)
+        args = {"pr": int(number), "sha": head["sha"], "ids": [s.id for s in picked], "digest": "".join(s.digest() for s in picked)}
+        out = self.gk.request_action(project=project.name, identity=sender, is_human=True, action="repo.apply_suggestion", target=number,
+                                     args=args, room_id=room, name=who)
+        if out.status == "denied":
+            return f"Denied: {out.reason}."
+        prompt = self._prompt(out.approval_id, "repo.apply_suggestion", number, {}, who,
+                              extra=f" ({len(picked)} suggestion(s) by {', '.join(sorted({_t(s.author, 30) for s in picked}))}, head {head['sha'][:7]})")
+        return prompt + "\nThe change:\n" + fenced(clean_lines(previews, 40))
+
+    def _run_apply_suggestions(self, project: Project, actor: str, args: dict[str, Any], approved_by: str) -> str:
+        """After approval: check the branch and every suggestion are exactly what was approved, then commit them one file at a time."""
+        repo, who, number = project.repo, self._name(actor), int(args["pr"])
+        def fail(reason: str) -> str:
+            self.gk.audit.write(project=project.name, actor=actor, event="failed", action="repo.apply_suggestion", target=str(number),
+                                error=reason[:200], name=who, approved_by=approved_by)
+            return f"Not applied: {reason}. Nothing was changed."
+        try:
+            head, usable, _, blocker = self._suggestion_state(project, number)
+            if blocker:
+                return fail(blocker)
+            if head["sha"] != args["sha"]:
+                return fail("the branch changed after approval was requested; ask again")
+            chosen = [s for s in usable if s.id in args["ids"]]
+            if len(chosen) != len(args["ids"]) or "".join(s.digest() for s in chosen) != args["digest"]:
+                return fail("a suggestion changed or was withdrawn after approval was requested; ask again")
+            by_path: dict[str, list] = {}
+            for s in chosen:
+                by_path.setdefault(s.path, []).append(s)
+            planned = []
+            for path, items in by_path.items():                       # build every file first: all or nothing before the first commit
+                blob = self.github.file_at(repo.name, path, head["sha"])
+                old = sg.decode(blob)
+                new = sg.apply_to_text(old, items)
+                if new != old:
+                    planned.append((path, items, blob["sha"], new))
+        except (GitHubError, sg.SuggestionError) as exc:
+            return fail(str(exc))
+        if not planned:
+            return fail("applying them would not change any file")
+        commits = []
+        for path, items, blob_sha, new in planned:
+            authors = sorted({(s.author, s.author_id) for s in items})
+            credit = "".join(f"\nCo-authored-by: {a} <{uid}+{a}@users.noreply.github.com>" for a, uid in authors if uid and re.fullmatch(r"[A-Za-z0-9-]{1,39}", a))
+            message = (f"Apply review suggestion{'s' if len(items) > 1 else ''} to {path}\n\nSuggested by {', '.join(a for a, _ in authors)} on pull request #{number}. "
+                       f"Applied through Shipyard for {who}, approved by {self._name(approved_by)}.{credit}")
+            try:
+                commits.append(self.github.put_file(repo.name, path, head["ref"], message, new.encode(), blob_sha))
+            except GitHubError as exc:
+                done = f" {len(commits)} earlier file(s) were already committed." if commits else ""
+                self.gk.audit.write(project=project.name, actor=actor, event="failed", action="repo.apply_suggestion", target=str(number),
+                                    error=str(exc)[:200], name=who, approved_by=approved_by, commits=[c[:7] for c in commits])
+                return f"Failed: {path}: {exc}.{done}" + ("" if commits else " Nothing was changed.")
+        self.gk.audit.write(project=project.name, actor=actor, event="executed", action="repo.apply_suggestion", target=str(number),
+                            result=f"{len(chosen)} suggestion(s) in {len(planned)} commit(s)", name=who, approved_by=approved_by,
+                            ids=args["ids"], commits=[c[:7] for c in commits])
+        return (f"Done: applied {len(chosen)} suggestion(s) to PR #{number} in {len(commits)} commit(s) (now {commits[-1][:7]}), for {who}, approved by "
+                f"{self._name(approved_by)}. CI and the SBOM report run again on the new commit; a merge needs a fresh approval for it.")
+
     def _merge_blockers(self, project: Project, number: int):
         """(pr, reason). A reason means: do not merge. Used when asked, and again after approval."""
         pr = self.github.pr(project.repo.name, number)
@@ -519,15 +668,19 @@ class Service:
         return None
 
     def _shell_exec(self, project: Project, room: str, sender: str, cmd: Command) -> str:
-        """`shell <host> <command>` and `exec <app> <command>`: owner only, always approved, allowlisted twice."""
+        """`shell <host> <command>`: owner only, approved. `exec <app> <command>`: maintainers and up, inside the app's container or pod.
+        Both are allowlisted twice (here and on the far side) and never reach a shell."""
         target, argv = cmd.args[0], list(cmd.args[1:])
-        action = "ops.shell" if cmd.verb == "shell" else "ops.exec"
+        backend = project.backend_of(target) if cmd.verb == "exec" else None
+        action = "ops.shell" if cmd.verb == "shell" else f"{backend}.exec" if backend else "coolify.exec"
         if not self._is_member(project, sender):
             return self._deny(project, sender, action, target, "you are not a member of this project")
         if cmd.verb == "shell" and target not in self.cfg.hosts:
             return self._deny(project, sender, action, target, f"unknown host {target!r}", name=self._name(sender))
-        if cmd.verb == "exec" and project.backend_of(target) != "k8s":
-            return self._deny(project, sender, action, target, f"exec works on Kubernetes apps, and {target!r} is not one",
+        if cmd.verb == "exec" and backend is None:
+            return self._deny(project, sender, action, target, f"unknown app {target!r}", name=self._name(sender))
+        if cmd.verb == "exec" and backend == "coolify" and not project.exec_host:
+            return self._deny(project, sender, action, target, "exec in Coolify containers is not set up for this project (exec_host)",
                               name=self._name(sender))
         command = " ".join(argv)
         d = evaluate(self.cfg.policy, project=project.name, identity=sender, is_human=True, action=action, target=target,
@@ -535,7 +688,7 @@ class Service:
         if d.verdict is Verdict.DENY:                       # the role is checked first: others learn nothing about the allowlist
             return self._deny(project, sender, action, target, d.reason, name=self._name(sender), command=command[:80])
         try:
-            (check_host if cmd.verb == "shell" else check_pod)(argv)
+            (check_host if cmd.verb == "shell" else check_container)(argv)
         except Refused as exc:
             return self._deny(project, sender, action, target, str(exc), name=self._name(sender), command=command[:80])
         args = {"argv": argv, "command": command}
@@ -585,6 +738,8 @@ class Service:
         if out.status != "approved":
             return f"Denied: {out.reason}."
         r = out.request or {}
+        if r["action"] == "repo.apply_suggestion":
+            return self._run_apply_suggestions(project, r["requester"], r["args"], sender)
         if r["action"] == "repo.merge":
             return self._run_merge(project, r["requester"], int(r["target"]), r["args"].get("sha", ""), sender,
                                    gate_ids=r["args"].get("gate"))
@@ -613,7 +768,11 @@ class Service:
                 return "", self.coolify.container_logs(uuid, int(args.get("lines", 40)) + 60)
             if action == "coolify.history":
                 return "", self.coolify.deployment_history(uuid)
-        if action.startswith("k8s.") or action == "ops.exec":
+        if action == "coolify.exec":
+            if self.hostshell is None or not project.exec_host:
+                raise ShellError("exec in Coolify containers is not set up")
+            return "", self.hostshell.container_exec(project.exec_host, project.apps[target], args.get("argv", []))
+        if action.startswith("k8s."):
             if self.kube is None:
                 raise KubeError("Kubernetes is not configured")
             app = project.k8s_apps[target]
@@ -629,7 +788,7 @@ class Service:
                 return self.kube.rollback(app.namespace, app.deployment, args.get("tag")), None
             if action == "k8s.scale":
                 return self.kube.scale(app.namespace, app.deployment, str(args.get("replicas", ""))), None
-            if action == "ops.exec":
+            if action == "k8s.exec":
                 return "", self.kube.exec(app.namespace, app.deployment, args.get("argv", []))
         if action == "ops.shell":
             if self.hostshell is None:
@@ -671,8 +830,18 @@ class Service:
         args.pop("gate", None)             # only the Gatekeeper decides what is gated
         who = f"agent:{agent}"
         read_repo = action in ("repo.pr_list", "repo.pr_status")
-        if not (action.startswith("coolify.") or read_repo):
+        is_exec = action in ("k8s.exec", "coolify.exec")
+        if not (action.startswith("coolify.") or read_repo or is_exec):
             return {"status": "denied", "reason": "unsupported action"}
+        if is_exec:                         # only the argument list, checked against the allowlist before anyone is asked
+            argv = args.get("argv")
+            if not isinstance(argv, list) or not all(isinstance(t, str) for t in argv):
+                return {"status": "denied", "reason": "give args {\"argv\": [\"ls\", \"-la\", \"/app\"]}"}
+            try:
+                check_container(argv)
+            except Refused as exc:
+                return {"status": "denied", "reason": str(exc)}
+            args = {"argv": list(argv), "command": " ".join(argv)}
         with self.lock:
             m = self.recent.get(message_id)
             reason = None
@@ -703,8 +872,11 @@ class Service:
             cmd = Command("prs", ()) if action == "repo.pr_list" else Command("pr", (target,))
             text = self._repo_read(project, room, requester, cmd)
             return {"status": "denied" if text.startswith("Denied") else "done", "result": text}
-        if target not in project.apps:
-            return {"status": "denied", "reason": f"unknown app {target!r}"}
+        backend = project.backend_of(target)
+        if backend is None or (action.startswith("coolify.") and backend != "coolify") or (action == "k8s.exec" and backend != "k8s"):
+            return {"status": "denied", "reason": f"unknown app {target!r} for {action}"}
+        if action == "coolify.exec" and not project.exec_host:
+            return {"status": "denied", "reason": "exec in Coolify containers is not set up for this project"}
         gated: list[str] = []
         if action == "coolify.deploy" and self._gated_app(project, target):
             try:

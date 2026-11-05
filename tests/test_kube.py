@@ -37,6 +37,9 @@ class Runner:
             return 0, HISTORY, ""
         if " logs " in a:
             return 0, "[pod/demo-k8s-aaa/web] GET /\n[pod/demo-k8s-bbb/web] boom\n", ""
+        if " exec " in a and " readlink -f " in a:
+            path = argv[-1]
+            return 0, getattr(self, "links", {}).get(path, path) + "\n", ""
         if " exec " in a:
             return 0, "uid=0(root)\n", ""
         return 0, "", ""
@@ -127,7 +130,7 @@ def test_exec_uses_the_ops_credential_a_running_pod_and_the_allowlist():
     k, r = kube()
     assert k.exec("demo", "demo-k8s", ["id"]) == ["uid=0(root)"]
     assert r.calls[-1] == ["kubectl", "--kubeconfig", "/k/ops", "-n", "demo", "exec", "demo-k8s-aaa", "--", "id"]
-    for cmd in (["env"], ["sh", "-c", "id"], ["cat", "/etc/passwd"], ["printenv", "DEMO_PASSWORD"], []):
+    for cmd in (["env"], ["sh", "-c", "id"], ["cat", "/etc/shadow"], ["printenv", "DEMO_PASSWORD"], []):
         with pytest.raises(KubeError):
             k.exec("demo", "demo-k8s", cmd)
 
@@ -153,3 +156,23 @@ def test_nothing_is_ever_run_through_a_shell():
     k.status("demo", "demo-k8s"); k.restart("demo", "demo-k8s"); k.scale("demo", "demo-k8s", "2"); k.exec("demo", "demo-k8s", ["ls", "/tmp"])
     for call in r.calls:
         assert call[0] == "kubectl" and "sh" not in call[:2] and "-c" not in call
+
+
+def test_exec_resolves_symlinks_inside_the_pod_and_refuses_a_link_to_a_secret():
+    r = Runner()
+    r.links = {"/app/config": "/app/.env"}
+    k, _ = kube(r)
+    with pytest.raises(KubeError, match="credentials"):
+        k.exec("demo", "demo-k8s", ["cat", "/app/config"])
+    assert not [c for c in r.calls if c[-3:-1] == ["--", "cat"] or c[-2:] == ["cat", "/app/config"]]       # the cat never ran
+    r.links = {}
+    assert k.exec("demo", "demo-k8s", ["cat", "/app/main.py"]) == ["uid=0(root)"]
+    used = [c for c in r.calls if " exec " in " ".join(c)]
+    assert used[-2][-3:] == ["readlink", "-f", "/app/main.py"] and used[-1][-3:] == ["cat", "/app/main.py"] or used[-1][-2:] == ["cat", "/app/main.py"]
+
+
+def test_exec_uses_the_ops_credential_and_refuses_before_touching_the_cluster():
+    k, r = kube()
+    with pytest.raises(KubeError, match="not allowed"):
+        k.exec("demo", "demo-k8s", ["env"])
+    assert not r.calls

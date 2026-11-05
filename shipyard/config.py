@@ -56,6 +56,7 @@ class Project:
     k8s_apps: dict[str, K8sApp] = field(default_factory=dict)     # app name -> Kubernetes deployment
     room_names: dict[str, str] = field(default_factory=dict)      # room id -> label for people, e.g. "#demo-ops"
     incident_rooms: frozenset[str] = frozenset()                  # where alerts and diagnosis go; commands work here too
+    exec_host: str | None = None                                  # the host (from `hosts:`) that runs the Coolify containers: `exec <app>` goes there
 
     @property
     def rooms(self) -> frozenset[str]:
@@ -220,7 +221,8 @@ def load_config(path: str | Path) -> Config:
                 raise ValueError("merge_method must be merge, squash or rebase")
         projects[name] = Project(name, ops, maint, apps, repo,
                                  {str(k): str(v) for k, v in (spec.get("github_logins") or {}).items()}, k8s_apps,
-                                 {str(k): str(v)[:60] for k, v in (spec.get("room_names") or {}).items()}, incidents)
+                                 {str(k): str(v)[:60] for k, v in (spec.get("room_names") or {}).items()}, incidents,
+                                 str(spec["exec_host"]) if spec.get("exec_host") else None)
     rooms = [r for p in projects.values() for r in p.rooms]
     if len(rooms) != len(set(rooms)):
         raise ValueError("a room may belong to only one project")
@@ -232,6 +234,8 @@ def load_config(path: str | Path) -> Config:
     kube = KubeCfg({str(r): str(f) for r, f in (k.get("kubeconfigs") or {}).items()}, str(k.get("kubectl", "kubectl")),
                    int(k.get("max_replicas", 10)), float(k.get("timeout", 30))) if k else None
     for p in projects.values():
+        if p.exec_host and p.exec_host not in hosts:
+            raise ValueError(f"exec_host {p.exec_host!r} is not one of the `hosts:`")
         if p.k8s_apps and kube is None:
             raise ValueError("Kubernetes apps need a `kubernetes:` block with kubeconfigs")
     switch, coolify, gk = raw.get("switch") or {}, raw.get("coolify") or {}, raw.get("gatekeeper") or {}
