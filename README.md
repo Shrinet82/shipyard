@@ -66,7 +66,14 @@ Commands are mentions, never a `!` prefix, because Switch uses `!` for its own c
 
 ## Install
 
-You need a machine that already runs **Switch** (with its admin login in `~/switch/.env`); on a blank Ubuntu machine, `scripts/install-switch.sh` sets one up with Docker and the bundled Mattermost. A brand-new Switch has no rooms, so `init` creates `<project>-ops` and `<project>-maintainers` for you. Coolify, a GitHub App and a Kubernetes cluster are optional; Shipyard asks about each and skips what you leave blank.
+You need a machine that already runs **Switch** (with its admin login in `~/switch/.env`). A brand-new Switch has no rooms, so `init` creates them for you. Coolify, a GitHub App and a Kubernetes cluster are optional; Shipyard asks about each and skips what you leave blank.
+
+**On a blank Ubuntu 24.04 machine, in this order** (this exact order was run from scratch on two new AWS VMs, a `t3.xlarge` for Shipyard and a `t3.medium` for Coolify):
+
+1. **Switch and Mattermost**: `scripts/install-switch.sh` (Docker, pinned Switch 0.31.0, the bundled Mattermost, agent management turned on).
+2. **The agents' controller** (only if you want the Ops and Repo agents): `scripts/install-controller.sh` installs Node 22, the Codex CLI and Switch's agent controller and runs it as an unprivileged user, `agentrun`. Then, once, as a person: `sudo -u agentrun -H codex login --device-auth`, and `sudo systemctl restart switch-agents` so Switch sees Codex as ready. Do this **before** `init`, or the template cannot create the agents.
+3. **Coolify** (optional), on its own machine: `curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash`. Create the root account **within 10 minutes** of it starting; if the page says the setup window is closed, run `docker restart coolify` on that machine and reload. Then, in Settings, enable **API access** and **MCP**, and create an API token (read, write and deploy).
+4. **Shipyard**: the command below. Put the Coolify token in the `COOLIFY_TOKEN` environment variable.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shrinet82/shipyard/main/scripts/install.sh | bash
@@ -101,6 +108,8 @@ Everything can also run without questions: `python3 -m shipyard init --answers a
 - *CI*: add the `sbom` job from [`shipyard-demo`'s workflow](https://github.com/Shrinet82/shipyard-demo/blob/main/.github/workflows/ci.yml) (Syft and Grype, actions pinned by commit). Mark `test` and `sbom` as required checks.
 - *Kubernetes (optional)*: `deploy/k8s/` has the RBAC and a workload; `scripts/k8s_kubeconfigs.sh` makes the three least-privilege kubeconfigs.
 - *Production shell (optional)*: `deploy/ops-shell/install.sh` sets up the forced-command SSH key.
+
+**Discord**: in Switch Console (`ssh -L 8000:localhost:8000 <the Switch machine>`, then http://localhost:8000), add the Discord app with your bot token, then press **Sync rooms** on the Shipyard dashboard's *Switch rooms* page: it makes the missing rooms and desk rooms in Discord. To let it notice channels deleted in Discord (Switch does not), set `discord: {token_file: ~/discord.env}` in `shipyard.yaml` (a file with `DISCORD_BOT_TOKEN=`; read only).
 
 **Adding a room later** (for example an incidents room): add its id under `rooms:` in `shipyard.yaml` (`incidents:` for alerts), restart the Gatekeeper, then press **Sync from roles** on the dashboard's *Agent access* page. Until you do, Switch tells the Gatekeeper it may not address the agents in the new room, so the Ops Agent never wakes there. With an incidents room, an alert goes to it and to the ops rooms; the Ops Agent is asked once, in the incidents room.
 
