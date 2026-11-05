@@ -549,7 +549,7 @@ const autoBadge = (t) => (t.automatic ? h('span', { class: 'autob', title: 'Open
 const labelTag = (l) => h('span', { class: 'ltag', text: l });
 const avatar = (p, size) => h('span', { class: 'avatar h-' + hue(p && p.id) + (size ? ' ' + size : ''), 'aria-hidden': 'true', text: plainName(p).charAt(0).toUpperCase() });
 function who(p, hint) {
-  if (!p) return h('span', { class: 'who muted' }, h('span', { class: 'avatar none', 'aria-hidden': 'true' }), 'Unassigned', hint ? [' · ', mono(hint)] : null);
+  if (!p) return h('span', { class: 'who muted' }, h('span', { class: 'avatar none', 'aria-hidden': 'true' }), h('span', { class: 'wcol' }, 'Unassigned', hint ? mono(hint) : null));
   return h('span', { class: 'who' }, avatar(p), plainName(p));
 }
 function dueBit(t, done) {

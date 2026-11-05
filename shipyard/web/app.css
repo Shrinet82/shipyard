@@ -154,6 +154,7 @@ pre { margin: 0; padding: 12px; border-radius: 8px; background: var(--surface2);
 .avatar.h-good { background: var(--good-soft); color: var(--good); } .avatar.h-warn { background: var(--warn-soft); color: var(--warn); }
 .avatar.none { border: 1px dashed var(--muted); }
 .who { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.wcol { display: flex; flex-direction: column; gap: 2px; min-width: 0; } .wcol .mono { font-size: 11px; overflow-wrap: anywhere; }
 .overdue-chip { display: inline-block; padding: 2px 8px; border-radius: 6px; background: var(--crit-soft); color: var(--crit); font-size: 12px; font-weight: 600; }
 .ci { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; white-space: nowrap; }
 .ci-green { color: var(--good); } .ci-red { color: var(--crit); } .ci-pending { color: var(--warn); }
