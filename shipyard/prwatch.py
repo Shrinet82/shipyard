@@ -31,9 +31,11 @@ STALE_REPEAT = 24 * 3600.0
 
 
 class PrWatcher:
-    def __init__(self, cfg: Config, gk: Gatekeeper, github, post: Callable[[str, str], None], now: Callable[[], float] = time.time, flow=None):
+    def __init__(self, cfg: Config, gk: Gatekeeper, github, post: Callable[[str, str], None], now: Callable[[], float] = time.time, flow=None, settle: float = 0.0):
         self.cfg, self.gk, self.github, self.post, self.now = cfg, gk, github, post, now
         self._hook_lock = threading.Lock()
+        self.settle = settle                    # seconds after a webhook to read GitHub once more: its check-run list can lag the event by a moment
+        self._settling: set[str] = set()
         self.flow = flow                       # the Board, when it is on: pull requests that say "Fixes SY-12" are linked to their tickets
         with gk.lock:
             gk.db.executescript(SCHEMA)
@@ -63,11 +65,23 @@ class PrWatcher:
         if project is None:
             return
         log.info("GitHub webhook %s for %s: refreshing", event, repo)
+        self._refresh(project)
+        if self.settle > 0 and project.name not in self._settling:
+            self._settling.add(project.name)
+            timer = threading.Timer(self.settle, self._settled, (project,))
+            timer.daemon = True
+            timer.start()
+
+    def _settled(self, project: Project) -> None:
+        self._settling.discard(project.name)
+        self._refresh(project)
+
+    def _refresh(self, project: Project) -> None:
         with self._hook_lock:                                    # one refresh at a time; a burst of events becomes a few refreshes
             try:
                 self._poll_project(project)
             except GitHubError as exc:
-                log.warning("refresh of %s after a webhook failed: %s", repo, exc)
+                log.warning("refresh of %s after a webhook failed: %s", project.repo.name, exc)
 
     def poll_once(self) -> None:
         for project in self.cfg.projects.values():

@@ -447,3 +447,18 @@ def test_a_webhook_for_another_repository_is_ignored(env):
     w.on_hook("pull_request", {"repository": {"full_name": "evil/other"}})
     w.on_hook("pull_request", {})
     assert env.t.get("demo", OWNER, "SY-1")["status"] == "todo"
+
+
+def test_a_webhook_refreshes_again_a_moment_later_in_case_githubs_check_list_lagged(env):
+    w = watcher(env)
+    w.settle = 0.05
+    env.call(OWNER, "ticket_create", title="x")
+    env.gh.set(mkpr(26, "Fixes SY-1", author="depgh"), "pending", ("test",))
+    w.on_hook("check_run", {"repository": {"full_name": "o/r"}})
+    assert env.t.get("demo", OWNER, "SY-1")["links"][0]["meta"]["ci"] == "pending"
+    env.gh.set(mkpr(26, "Fixes SY-1", author="depgh"), "green")                       # GitHub catches up after the event
+    for _ in range(100):
+        if env.t.get("demo", OWNER, "SY-1")["links"][0]["meta"]["ci"] == "green":
+            break
+        time.sleep(0.02)
+    assert env.t.get("demo", OWNER, "SY-1")["links"][0]["meta"]["ci"] == "green"

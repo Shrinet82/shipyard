@@ -148,7 +148,7 @@ def run(config_path: str) -> None:
     threading.Thread(target=_loop, args=(stop, 900, service.flow.due_tick, "due dates"), daemon=True).start()
     threading.Thread(target=_loop, args=(stop, 30, service.sweep, "sweep"), daemon=True).start()
     if github:
-        watcher = PrWatcher(cfg, gk, github, switch.post, flow=service.flow)
+        watcher = PrWatcher(cfg, gk, github, switch.post, flow=service.flow, settle=6.0)
         service.github_hooks.append(watcher.on_hook)
         digest = DigestScheduler(cfg, gk, github, switch.post, service._name)
         threading.Thread(target=_loop, args=(stop, cfg.github.poll_seconds, watcher.poll_once, "PR poll"), daemon=True).start()
