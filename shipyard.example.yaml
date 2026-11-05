@@ -16,10 +16,13 @@ github:                                       # a GitHub App installed on the re
   private_key_file: ~/shipyard-github.pem
   poll_seconds: 60
   stale_hours: 48
+  webhook_secret_file: ~/shipyard-github-webhook.secret   # with this file present, GitHub's signed webhooks are accepted (python3 -m shipyard github-webhook)
 alerts:                                       # Coolify's webhook posts here; the URL carries a secret
   port: 8766
   evidence_lines: 40
   agent: ops-agent
+  restart_limit: 5                            # a Kubernetes pod restarted this often is an alert
+  cluster_poll_seconds: 60                    # how often the cluster is looked at (0 turns it off)
 digest:
   hour: 9
   minute: 0
@@ -34,6 +37,7 @@ kubernetes:                                   # one least-privilege ServiceAccou
   max_replicas: 10
   kubeconfigs: {viewer: ~/kube/viewer.kubeconfig, deployer: ~/kube/deployer.kubeconfig, ops: ~/kube/ops.kubeconfig}
 
+desks_file: ~/shipyard-desks.json             # which personal desk room is whose (`@gatekeeper desks create`)
 projects:
   demo:
     rooms:                                    # Switch room ids
@@ -42,6 +46,7 @@ projects:
       incidents: ["00000000-0000-0000-0000-000000000003"]    # optional: alerts and the Ops Agent's diagnosis land here; the ops rooms hear the alert too
     ticket_prefix: SY                         # Board ticket keys: SY-1, SY-2, ...
     on_call: "@switch-discord-BRIDGE-owner:localhost"   # optional: who automatic alert tickets are assigned to
+    servers: []                               # Coolify server uuids this project owns, for disk alerts (not needed with one project)
     exec_host: prod                           # the host (from `hosts:`) that runs the Coolify containers, for `exec <app> <command>`
     apps:                                     # app name -> Coolify application uuid
       demo-web: "aaaaaaaaaaaaaaaaaaaaaaaa"
