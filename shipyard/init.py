@@ -24,7 +24,9 @@ import yaml
 
 from . import defaults
 from .access import AccessError, Gateway, read_env
+from .audit import AuditLog
 from .config import load_config
+from .members import MemberStore
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 UNIT = """[Unit]
@@ -444,6 +446,10 @@ def doctor(config_path: Path, say: Callable[[str], None] = print, http: Callable
         line(False, f"{config_path} cannot be read: {exc}")
         return False
     line(True, f"config {config_path} reads ({len(cfg.projects)} project)")
+    try:
+        MemberStore(os.path.expanduser(cfg.dashboard.members_file), cfg.policy, None).load()    # roles edited on the dashboard
+    except SystemExit as exc:
+        line(False, str(exc))
     for name, p in cfg.projects.items():
         line(bool(p.rooms), f"project {name}: {len(p.ops_rooms)} ops room(s), {len(p.maintainer_rooms)} maintainers room(s), {len(cfg.policy.members.get(name, {}))} member(s)")
         if not cfg.policy.members.get(name):
@@ -461,6 +467,17 @@ def doctor(config_path: Path, say: Callable[[str], None] = print, http: Callable
             line(status == 200, f"Coolify answers {status}")
         except Exception as exc:                              # noqa: BLE001
             line(False, f"Coolify: {exc}")
+    db_file = os.path.expanduser(cfg.db_path)
+    if os.path.exists(db_file):
+        import sqlite3
+        db = sqlite3.connect(db_file)
+        try:
+            rows, head = AuditLog(db).head()
+            line(AuditLog(db).verify(), f"audit chain verifies ({rows} rows, head {head[:12]})")
+        except sqlite3.Error as exc:
+            line(False, f"audit log: {exc}")
+        finally:
+            db.close()
     r = run(["systemctl", "--user", "is-active", "shipyard-gatekeeper"])
     line(getattr(r, "stdout", "").strip() == "active", "systemd service shipyard-gatekeeper is active")
     if cfg.dashboard.bind:

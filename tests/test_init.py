@@ -374,3 +374,22 @@ def test_agents_that_run_as_another_user_get_their_tool_config_in_that_users_hom
     inst2.paths["mcp"].write_text("t" * 32)
     inst2.write_codex_config()
     assert (home / "own.toml").exists()
+
+
+def test_doctor_counts_roles_from_the_dashboard_file_and_checks_the_audit_chain(home):
+    import sqlite3
+    from shipyard.audit import AuditLog
+    installer(home, answers(home, owner="")).install()
+    cfg = load_config(home / "shipyard.yaml")
+    MemberStore(home / "shipyard-members.json", cfg.policy, None).add_owner("demo", OWN)
+    db = sqlite3.connect(home / "shipyard.db")
+    AuditLog(db).write(project="demo", actor="a", event="x", action="y", target="z")
+    db.commit(); db.close()
+    out = []
+    ok = doctor(home / "shipyard.yaml", say=out.append, http=lambda *a, **k: (200, "x"), gateway=FakeGw, run=lambda argv: SimpleNamespace(stdout="active"), wait=0)
+    assert ok and any("audit chain verifies (1 rows" in l for l in out) and not any("no owner yet" in l for l in out)
+    db = sqlite3.connect(home / "shipyard.db")
+    db.execute("UPDATE audit SET actor = 'tampered'"); db.commit(); db.close()
+    out.clear()
+    assert not doctor(home / "shipyard.yaml", say=out.append, http=lambda *a, **k: (200, "x"), gateway=FakeGw, run=lambda argv: SimpleNamespace(stdout="active"), wait=0)
+    assert any("FAIL" in l and "audit chain" in l for l in out)
