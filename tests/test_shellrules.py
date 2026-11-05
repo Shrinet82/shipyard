@@ -109,6 +109,10 @@ def test_container_exec_refuses_what_could_leak_or_change_things(cmd):
         check_container(cmd.split())
 
 
+def test_etc_os_release_resolves_through_its_usual_symlink():
+    assert check_container(["cat", "/etc/os-release"], lambda p: "/usr/lib/os-release")
+
+
 def test_symlinks_inside_the_container_cannot_lead_to_a_refused_file():
     links = {"/app/current": "/app/releases/3", "/app/config": "/app/.env", "/tmp/x": "/etc/shadow", "/app/out": "/proc/1/environ", "/app/up": "/root/.ssh/id_rsa"}
     resolve = lambda p: links.get(p, p)                      # noqa: E731

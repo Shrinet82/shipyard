@@ -167,7 +167,7 @@ def check_host(argv: Sequence[str], resolve: Resolver | None = None) -> tuple[st
 
 CONTAINER_ROOTS = ("/app", "/srv", "/opt", "/var/www", "/var/log", "/etc", "/tmp", "/home", "/workspace", "/code", "/usr/src",
                    "/usr/share", "/usr/local", "/data")
-CONTAINER_FILES = frozenset({"/proc/loadavg", "/proc/meminfo", "/proc/cpuinfo", "/proc/uptime", "/proc/version", "/proc/stat",
+CONTAINER_FILES = frozenset({"/usr/lib/os-release", "/proc/loadavg", "/proc/meminfo", "/proc/cpuinfo", "/proc/uptime", "/proc/version", "/proc/stat",
                              "/proc/net/dev", "/proc/net/tcp", "/proc/net/tcp6"})
 # A path is refused when any of these appears in it (lower-cased): files and folders that usually hold credentials.
 SECRET_MARKERS = (".env", ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", "id_rsa", "id_ed25519", "id_ecdsa", "secret", "token",
