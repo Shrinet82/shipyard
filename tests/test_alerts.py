@@ -203,3 +203,56 @@ def test_an_alert_never_runs_anything(alert_env):
     svc.on_coolify_event(FAILED)
     assert gk.db.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
     assert not any(r["event"] in ("executed", "allowed") for r in gk.audit.recent("demo", 10))
+
+
+INC = "room-incidents"
+
+
+@pytest.fixture
+def incident_env(tmp_path):
+    f = tmp_path / "c.yaml"
+    f.write_text(textwrap.dedent(f"""
+        projects:
+          demo:
+            rooms: {{ops: [{OPS}], maintainers: [{MAINT}], incidents: [{INC}]}}
+            room_names: {{{INC}: "#demo-incidents"}}
+            apps: {{demo-web: app-uuid-1}}
+            members: {{}}
+        actions: {{coolify.status: read}}
+    """))
+    cfg = load_config(f)
+    gk = Gatekeeper(cfg.policy, sqlite3.connect(":memory:", check_same_thread=False))
+    posts, cool = [], FakeCoolify()
+    return Service(cfg, gk, cool, lambda r, t: posts.append((r, t))), gk, posts, cfg
+
+
+def test_with_an_incidents_room_the_alert_goes_to_both_and_the_agent_is_asked_once(incident_env):
+    svc, gk, posts, cfg = incident_env
+    svc.on_coolify_event(FAILED)
+    by_room = dict(posts)
+    assert set(by_room) == {INC, OPS} and MAINT not in by_room                # both places, never the maintainers room
+    for text in by_room.values():
+        assert "deployment failed for demo-web" in text and "requirements.txt" in text      # the same evidence in both
+    assert "@ops-agent diagnose this in three lines" in by_room[INC]
+    assert "@ops-agent" not in by_room[OPS] and "diagnosis will follow in #demo-incidents" in by_room[OPS]
+    assert cfg.projects["demo"].alert_rooms == {INC, OPS}
+    assert len([1 for r in gk.audit.recent("demo", 5) if r["event"] == "alert"]) == 1
+
+
+def test_a_replayed_alert_is_not_posted_again_to_either_room(incident_env):
+    svc, _, posts, _ = incident_env
+    svc.on_coolify_event(FAILED)
+    svc.on_coolify_event(FAILED)
+    assert len(posts) == 2
+
+
+def test_an_incidents_room_cannot_also_be_an_ops_room(tmp_path):
+    f = tmp_path / "c.yaml"
+    f.write_text(f"projects: {{demo: {{rooms: {{ops: [{OPS}], incidents: [{OPS}]}}, apps: {{a: u}}, members: {{}}}}}}\nactions: {{}}\n")
+    with pytest.raises(ValueError, match="two kinds"):
+        load_config(f)
+
+
+def test_commands_work_in_the_incidents_room(incident_env):
+    svc, _, _, cfg = incident_env
+    assert cfg.project_for_room(INC).name == "demo"

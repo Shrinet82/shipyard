@@ -39,7 +39,7 @@ projects:
     rooms:                                    # Switch room ids
       ops: ["00000000-0000-0000-0000-000000000001"]          # commands and deploys
       maintainers: ["00000000-0000-0000-0000-000000000002"]  # PR alerts, the digest, SBOM reports
-      incidents: ["00000000-0000-0000-0000-000000000003"]    # optional: alerts and diagnosis go here instead of the ops rooms
+      incidents: ["00000000-0000-0000-0000-000000000003"]    # optional: alerts and the Ops Agent's diagnosis land here; the ops rooms hear the alert too
     exec_host: prod                           # the host (from `hosts:`) that runs the Coolify containers, for `exec <app> <command>`
     apps:                                     # app name -> Coolify application uuid
       demo-web: "aaaaaaaaaaaaaaaaaaaaaaaa"

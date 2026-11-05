@@ -187,7 +187,7 @@ def test_the_switch_template_creates_rooms_incidents_and_links_and_reuses_existi
     assert "version: 2" in run["template"] and "links:" in run["template"]
     p = load_config(home / "shipyard.yaml").projects["demo"]
     assert p.ops_rooms == {"t-ops"} and p.incident_rooms == {"t-incidents"} and p.maintainer_rooms == {"t-maintainers"}
-    assert p.alert_rooms == {"t-incidents"} and p.room_names["t-incidents"] == "#demo-incidents"
+    assert p.alert_rooms == {"t-incidents", "t-ops"} and p.room_names["t-incidents"] == "#demo-incidents"
     # the Gatekeeper is registered before the template runs, so the template can name it
     assert [c[0] for c in gws[0].calls].index("PUT") < [c[1] for c in gws[0].calls].index("/rooms/from-template-document")
     toml = (home / "codex.toml").read_text()

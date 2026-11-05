@@ -64,8 +64,8 @@ class Project:
 
     @property
     def alert_rooms(self) -> frozenset[str]:
-        """Alerts go to the incidents room when there is one, else to the ops rooms."""
-        return self.incident_rooms or self.ops_rooms
+        """Every room that hears about an alert: the incidents rooms, and the ops rooms too, so the people who watch deploys see it as well."""
+        return self.incident_rooms | self.ops_rooms
 
     @property
     def app_names(self) -> list[str]:

@@ -930,8 +930,18 @@ class Service:
                 f"You cannot change anything; people decide, e.g. `@gatekeeper rollback {app}`.")
         self.gk.audit.write(project=project.name, actor="coolify", event="alert", action=event, target=app,
                             deployment=str(payload.get("deployment_uuid", "")))
-        for room in sorted(project.alert_rooms):
+        if not project.incident_rooms:
+            for room in sorted(project.ops_rooms):
+                self.post(room, text)
+            return
+        # An incidents room exists: it gets the full alert and the Ops Agent is asked there. The ops rooms get the same evidence and a
+        # pointer, without a second request to the agent, so it diagnoses once.
+        where = ", ".join(sorted(project.room_names.get(r, "the incidents room") for r in project.incident_rooms))
+        pointer = text.split(f"@{agent} diagnose", 1)[0] + f"The Ops Agent's diagnosis will follow in {where}."
+        for room in sorted(project.incident_rooms):
             self.post(room, text)
+        for room in sorted(project.ops_rooms):
+            self.post(room, pointer)
 
     # -- housekeeping ---------------------------------------------------------
 
