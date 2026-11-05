@@ -16,6 +16,25 @@ if [ ! -f .env ]; then
 fi
 # --env-file matters: compose reads .env from the compose file's folder, not from here
 sudo docker compose --env-file .env -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway up -d
+# the compose file gives the containers no restart policy, so after a reboot Switch would stay down: start it from systemd
+sudo tee /etc/systemd/system/switch-stack.service >/dev/null <<UNIT
+[Unit]
+Description=Switch and Mattermost (docker compose)
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$HOME/switch
+ExecStart=/usr/bin/docker compose --env-file .env -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway up -d
+ExecStop=/usr/bin/docker compose --env-file .env -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway stop
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable switch-stack.service >/dev/null 2>&1
 for _ in $(seq 1 60); do curl -fs http://localhost:8000/health >/dev/null 2>&1 && break; sleep 3; done
 curl -s http://localhost:8000/health; echo
 echo "Switch is up. Its admin login is in ~/switch/.env. Next: scripts/install.sh"
