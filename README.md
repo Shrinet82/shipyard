@@ -42,7 +42,8 @@ The merge exchange ran on a build VM against a real repository and a real Grype 
 |---|---|
 | **Bridges and rooms** | One room group per project (ops and maintainers rooms), mirrored to Discord and Mattermost. Slack works through the same bridge mechanism but is untested here. |
 | **Agent protocol** | The Gatekeeper is itself a *custom Switch agent*: it holds a stream open, sends heartbeats, reads messages and posts replies and alerts. Nothing else listens to your rooms. |
-| **Agent controller** | The Ops Agent and Repo Agent are Codex agents run by a Switch controller on your machine, created from the files in `templates/agents/`. |
+| **Templates** | The whole project is one Switch template, [`templates/shipyard.template.yaml`](templates/shipyard.template.yaml): the Ops and Repo agents, a room group with an ops, an incidents and a maintainers room, and the links between them. `shipyard init` runs it through Switch's template API; Switch Console can run the same file from its Templates page. |
+| **Agent controller** | The Ops Agent and Repo Agent are Codex agents run by a Switch controller on your machine. The template creates them, or reuses the ones Switch already has. |
 | **Sender identity** | Each message carries the sender's platform account (`@switch-discord-<bridge>-<name>:localhost`). Roles and approvals are tied to that, so "who said approve" is not something a message can claim. |
 | **Addressing policy** | Switch itself refuses messages to an agent from people outside the project, and only in the project's rooms. The dashboard's *Agent access* page rebuilds that policy from the roles. |
 
@@ -50,12 +51,13 @@ The merge exchange ran on a build VM against a real repository and a real Grype 
 
 | Area | Commands (mention `@gatekeeper`) | Who |
 |---|---|---|
-| Read | `status`, `logs`, `events`, `prs`, `pr <n>`, `digest`, `sbom [pr\|commit]`, `audit [n]`, `whoami` | viewer and up |
+| Read | `status`, `logs`, `events`, `prs`, `pr <n>`, `digest`, `suggestions <pr>`, `sbom [pr\|commit\|release-tag\|app\|live]`, `audit [n]`, `whoami` | viewer and up |
 | Change | `deploy`, `restart`, `rollback` (approval), `scale` (Kubernetes) | deployer and up |
-| Dangerous | `merge <pr>`, `shell <host> <cmd>`, `exec <app> <cmd>` | maintainer / owner, plus a second person's approval |
+| Diagnose | `exec <app> <command>`: one of about 50 read-only commands inside the app's Coolify container or Kubernetes pod (`ls`, `cat`, `tail`, `grep`, `ps`, `df`, `curl http://localhost:PORT/health`, a runtime's `--version`, ...). No shell, no writes, no deletes, no environment, no credential files. | maintainer and up |
+| Dangerous | `merge <pr>`, `apply-suggestion <pr> <n\|all>` (a reviewer's suggested change, committed to the PR branch), `shell <host> <cmd>` (owner) | maintainer / owner, plus a second person's approval |
 | Approve | `approve <id>`, `deny <id>` | owner, or another maintainer |
 | Automatic | deploy-failure and crash **alerts** with real log evidence and a three-line diagnosis; **PR alerts** (opened, CI red or green, conflicts, stale); a **daily digest** per maintainer | |
-| Security | an **SBOM report** for every CI run, diffed against the last deployed release; critical CVEs **gate** the deploy | owner overrides |
+| Security | an **SBOM report** for every CI run, diffed against the last deployed release, posted in the maintainers and ops rooms with the deploy plan; critical CVEs **gate** the deploy; new copyleft or unknown **licences** are flagged (report only) | owner overrides |
 | Dashboard | audit log, pending approvals, SBOM reports, backend health, roles and agent access | owner edits roles |
 
 Commands are mentions, never a `!` prefix, because Switch uses `!` for its own commands.
@@ -74,7 +76,7 @@ That installs Python, PyYAML, OpenSSL and git with apt, clones this repository t
 2. asks for your Coolify URL and token (typed hidden), **lists your applications** and lets you choose;
 3. checks the GitHub App can see your repository **before** writing anything;
 4. writes `~/shipyard.yaml` and the secret files (all mode `0600`), registers the Gatekeeper in Switch and adds it to the rooms;
-5. optionally creates the Ops and Repo agents on a Switch controller and gives them **only** the Gatekeeper's tool;
+5. runs the Shipyard **Switch template**: the project's three rooms and the links between them, and the Ops and Repo agents (reused if Switch has them, otherwise created on your controller, which needs Codex installed and signed in); the agents get **only** the Gatekeeper's tool;
 6. installs and starts a systemd user service, then runs `doctor` and prints what is left to do.
 
 After it finishes:
@@ -137,14 +139,17 @@ The permission model is tested with attack cases (forged approvals, replays, age
 | `shipyard/sbom*.py` | SBOM parsing, trust checks, store and collector |
 | `shipyard/dashboard.py`, `web/` | the dashboard (standard library and plain JavaScript, no build step) |
 | `shipyard/init.py` | the installer and `doctor` |
-| `templates/agents/` | the Ops and Repo agent definitions |
+| `templates/shipyard.template.yaml` | the Switch template: agents, rooms, links |
+| `shipyard/suggestions.py` | reading and applying reviewers' suggested changes |
 | `docs/` | the scope and results of each phase, pinned tools, the architecture image |
 
 ```bash
 python3 -m pip install pyyaml pytest
-python3 -m pytest        # 554 tests, no network
+python3 -m pytest        # 775 tests, no network
 ```
 
 ## Status
 
-Built in five phases during the hackathon; each ended in something that ran. Every phase was verified live on Mattermost (alerts, approvals, rollback, merge and deploy, Kubernetes, shell, the SBOM gate and the dashboard). On Discord the commands, approvals, rollback and merge were verified. Not done: the Slack run, Coolify container exec (it needs root-equivalent Docker access), and the stretch item of applying a reviewer's suggestion to a pull request. The installer was run on a clean Ubuntu VM (t3.large, then terminated): Switch's stack took about 6 minutes to pull and start (Docker and git installation were not timed separately), `scripts/install.sh` 25 seconds, and from `whoami` to the owner's first real command 16 seconds. That run found and fixed three bugs (no rooms on a new Switch, a JSON-only HTTP helper, re-running).
+Built in five phases during the hackathon, then extended. Verified live on Mattermost: alerts, approvals, rollback, merge and deploy, Kubernetes, shell, the SBOM gate, the dashboard, `exec` in a pod, release names, licence flags, and applying a reviewer's suggestion (a commit by the GitHub App to the PR branch, crediting the reviewer). On Discord the commands, approvals, rollback and merge were verified. The installer was run on a clean Ubuntu VM (t3.large, then terminated): Switch's stack took about 6 minutes to pull and start, `scripts/install.sh` 25 seconds, and from `whoami` to the owner's first real command 16 seconds; that run found and fixed three bugs.
+
+**Future scope:** a Slack run (Switch bridges Slack the same way, but it is untested here); more commands for `exec`, and an `exec` that is allowed to write (today nothing in the list changes anything); applying suggestions from a fork's pull request; per-release SBOM history on the dashboard.

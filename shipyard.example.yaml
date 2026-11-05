@@ -1,4 +1,4 @@
-# Shipyard policy. Chat identities are Switch sender ids, exactly as `!whoami` prints them.
+# Shipyard policy. Chat identities are Switch sender ids, exactly as `@gatekeeper whoami` prints them.
 # Never use display names. Agents must never be listed as members.
 switch:
   url: http://localhost:8000
@@ -37,8 +37,10 @@ kubernetes:                                   # one least-privilege ServiceAccou
 projects:
   demo:
     rooms:                                    # Switch room ids
-      ops: ["00000000-0000-0000-0000-000000000001"]          # commands, alerts, diagnosis
-      maintainers: ["00000000-0000-0000-0000-000000000002"]  # PR alerts and the digest
+      ops: ["00000000-0000-0000-0000-000000000001"]          # commands and deploys
+      maintainers: ["00000000-0000-0000-0000-000000000002"]  # PR alerts, the digest, SBOM reports
+      incidents: ["00000000-0000-0000-0000-000000000003"]    # optional: alerts and diagnosis go here instead of the ops rooms
+    exec_host: prod                           # the host (from `hosts:`) that runs the Coolify containers, for `exec <app> <command>`
     apps:                                     # app name -> Coolify application uuid
       demo-web: "aaaaaaaaaaaaaaaaaaaaaaaa"
       demo-k8s: {backend: k8s, namespace: demo, deployment: demo-k8s}   # namespace comes from here, never from chat
@@ -77,7 +79,10 @@ actions:
   coolify.rollback:  change      # the Phase 1 exit check wants owner approval: see approval_overrides
   repo.merge:        dangerous
   ops.shell:         dangerous
-  ops.exec:          dangerous
+  coolify.exec:      change      # allowlisted read-only commands inside an app's container (about 50: ls, cat, tail, ps, curl localhost ...)
+  k8s.exec:          change      # the same list inside a pod
+  repo.suggestions:  read
+  repo.apply_suggestion: dangerous   # a reviewer's suggested change, applied to the PR branch; needs a second person
   secrets.read:      dangerous
   coolify.stop_prod: dangerous
   coolify.delete:    dangerous
@@ -88,7 +93,8 @@ actions:
 # Dangerous actions that need more than maintainer to even request.
 min_role:
   ops.shell: owner
-  ops.exec: owner
+  coolify.exec: maintainer
+  k8s.exec: maintainer
 
 # Change-tier actions that still need an approval (second person or owner).
 approval_overrides:
@@ -102,6 +108,7 @@ sbom:
   workflow: .github/workflows/ci.yml          # the only workflow whose artifacts are believed
   data_dir: ~/shipyard-sbom
   poll_seconds: 90
+  copyleft: [AGPL, GPL, SSPL, EUPL, OSL, CC-BY-SA]   # licence families flagged in reports (report only: a licence never blocks a deploy)
 
 # The dashboard listens on loopback only; reach it with: ssh -L 8780:localhost:8780 <vm>
 dashboard:
