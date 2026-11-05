@@ -52,6 +52,7 @@ def make_handler(secret: str, on_event: Callable[[dict[str, Any]], None], github
                 log.warning("GitHub webhook with a wrong signature from %s", self.client_address[0])
                 return self._reply(404)                      # reveal nothing
             event = self.headers.get("X-GitHub-Event", "")
+            log.info("GitHub delivery %r accepted (signature good)", event[:40])
             try:
                 payload = json.loads(body or b"{}")
             except ValueError:
