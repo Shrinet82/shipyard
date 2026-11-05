@@ -20,6 +20,8 @@ const ICONS = {
   x: ['M6 6l12 12M18 6L6 18'],
   lock: ['rect:5,11,14,10', 'M8 11V8a4 4 0 0 1 8 0v3'],
   rooms: ['M4 5h16v10H9l-5 4z', 'M8 9h8M8 12h5'],
+  board: ['rect:3,4,5,16', 'rect:10,4,5,10', 'rect:17,4,4,13'],
+  pr: ['circle:6,5,2', 'circle:6,19,2', 'circle:18,19,2', 'M6 7v10', 'M18 17V10a3 3 0 0 0-3-3h-3'],
 };
 function icon(name, size = 18) {
   const s = document.createElementNS(SVG_NS, 'svg');
@@ -55,7 +57,7 @@ const mono = (t, cls = '') => h('span', { class: ('mono ' + cls).trim(), text: t
 const safeUrl = (u) => (typeof u === 'string' && /^https:\/\//.test(u) ? u : null);
 
 // ---- state, api --------------------------------------------------------------------------------------
-const S = { token: null, me: null, timers: [], approvals: 0 };
+const S = { token: null, me: null, timers: [], approvals: 0, open: 0 };
 try { S.token = sessionStorage.getItem('sy_token'); } catch (e) { /* storage blocked: sign in each time */ }
 const root = document.getElementById('root');
 
@@ -190,8 +192,18 @@ function Gate(message) {
 }
 
 // ---- chrome --------------------------------------------------------------------------------------------------------
-const NAV = [['overview', 'Overview', 'overview'], ['audit', 'Audit log', 'audit'], ['approvals', 'Approvals', 'approvals'],
+const NAV = [['overview', 'Overview', 'overview'], ['audit', 'Audit log', 'audit'], ['approvals', 'Approvals', 'approvals'], ['board', 'Board', 'board'],
   ['sbom', 'SBOM reports', 'sbom'], ['rooms', 'Switch rooms', 'rooms'], ['backends', 'Backends', 'backends']];
+const navItems = () => NAV.filter(([route]) => route !== 'board' || (S.me && S.me.board));
+// the counts beside Approvals and Board follow the latest numbers without redrawing the page
+function refreshBadges() {
+  for (const [route, n] of [['approvals', S.approvals], ['board', S.open]]) {
+    const a = document.querySelector('.nav a[data-route="' + route + '"]');
+    if (!a) continue;
+    const cur = a.querySelector('.count');
+    if (n > 0) { if (cur) cur.textContent = n; else a.insertBefore(h('span', { class: 'count mono', text: n }), a.querySelector('.tag')); } else if (cur) cur.remove();
+  }
+}
 const OWNER_NAV = [['roles', 'Roles', 'roles'], ['agents', 'Agent access', 'key']];
 let chainBadge = null;
 function setChain(c) {
@@ -204,8 +216,9 @@ function Chrome(page, current) {
   const tick = () => { const n = Date.now() / 1000; clock.textContent = fmtIn(n, 'UTC').slice(11, 16) + ' UTC · ' + fmtIn(n, S.me.tz).slice(11, 16) + ' ' + tzName(S.me.tz); };
   tick(); every(15000, tick);
   chainBadge = h('span', { class: 'verified' }, icon('shield', 14), 'Checking audit chain…');
-  const link = ([route, label, ic], tag) => h('a', { href: '#/' + route, 'aria-current': current === route ? 'page' : null },
-    icon(ic), label, route === 'approvals' && S.approvals ? h('span', { class: 'count mono', text: S.approvals }) : null, tag ? h('span', { class: 'tag', text: 'owner' }) : null);
+  const badge = (route) => (route === 'approvals' ? S.approvals : route === 'board' ? S.open : 0);
+  const link = ([route, label, ic], tag) => h('a', { href: '#/' + route, 'data-route': route, 'aria-current': current === route ? 'page' : null },
+    icon(ic), label, badge(route) ? h('span', { class: 'count mono', text: badge(route) }) : null, tag ? h('span', { class: 'tag', text: 'owner' }) : null);
   return h('div', { class: 'sy' },
     h('header', { class: 'top' },
       h('div', { class: 'row' }, h('span', { class: 'brand' }, icon('logo', 24), 'Shipyard'), h('span', { class: 'vsep' }), h('span', { class: 'muted', text: 'Project' }),
@@ -213,7 +226,7 @@ function Chrome(page, current) {
       h('div', { class: 'row' }, h('span', { class: 'small' }, person(S.me.identity), ' ', roleBadge(S.me.role)), clock,
         h('button', { class: 'btn', type: 'button', onclick: async () => { try { await api('/api/logout', { method: 'POST', body: {} }); } catch (e) { /* ignore */ } signOut(); }, text: 'Sign out' }))),
     h('div', { class: 'shell' },
-      h('nav', { class: 'nav', 'aria-label': 'Main' }, NAV.map((n) => link(n)), h('div', { class: 'grp', text: 'Owner settings' }), OWNER_NAV.map((n) => link(n, true)),
+      h('nav', { class: 'nav', 'aria-label': 'Main' }, navItems().map((n) => link(n)), h('div', { class: 'grp', text: 'Owner settings' }), OWNER_NAV.map((n) => link(n, true)),
         h('p', { class: 'note', text: 'Pages without the owner tag are read-only. Actions happen in chat.' })),
       h('main', { class: 'main', id: 'main' }, page)));
 }
@@ -234,6 +247,8 @@ async function Overview(into) {
 async function paintOverview(into) {
   const d = await api('/api/overview');
   S.approvals = d.approvals.count; setChain(d.chain);
+  if (d.board) S.open = d.board.summary.open;
+  refreshBadges();
   const pills = d.health.map((i) => h('a', { class: 'pill' + (i.state === 'warn' || i.state === 'bad' ? ' warn' : ''), href: '#/backends' }, dot(i.state), i.title, h('span', { class: 'muted', text: i.headline })));
   const next = d.approvals.next_expires;
   const tiles = [
@@ -253,6 +268,7 @@ async function paintOverview(into) {
       h('p', { class: 'muted', text: [d.apps.join(', '), d.repo && 'repo ' + d.repo, d.rooms.length && 'rooms ' + d.rooms.join(', ')].filter(Boolean).join(' · ') }))),
     h('section', { 'aria-label': 'Backend health', class: 'pills' }, pills),
     h('section', { 'aria-label': 'Needs attention', class: 'tiles' }, tiles),
+    d.board && MyTickets(d.board),
     h('section', { class: 'col' }, h('div', { class: 'row between' }, h('h2', { text: 'Recent activity' }), h('a', { href: '#/audit', text: 'Full audit log' })),
       d.recent.length ? auditTable(d.recent) : empty('Nothing has happened yet', 'Commands, approvals and results appear here.')));
 }
@@ -494,19 +510,203 @@ async function Agents(into) {
         h('div', { class: 'small muted', title: a.last_synced ? fullTime(a.last_synced) : '', text: a.last_synced ? 'Last synced ' + rel(a.last_synced) : 'Not synced from the dashboard yet' })]))));
 }
 
+
+// ---- the Board ----------------------------------------------------------------------------------------------------------
+const STATUSES = ['todo', 'doing', 'review', 'done'];
+const STATUS_LABEL = { todo: 'To do', doing: 'Doing', review: 'Review', done: 'Done', cancelled: 'Cancelled' };
+const EMPTY_COL = { todo: 'Nothing waiting', doing: 'Nothing in progress', review: 'Nothing in review', done: 'Nothing finished this week' };
+const SOURCE_LABEL = { chat: 'chat', dashboard: 'dashboard', alert: 'alert', incident: 'incident', deploy_failed: 'deploy', sbom_gate: 'CVE' };
+const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
+const isoTs = (v) => (v ? Date.parse(v) / 1000 : 0);
+const statusChip = (st) => chip(STATUS_LABEL[st] || st, 's-' + st);
+const prioChip = (p) => chip(p, 'p-' + p);
+const autoBadge = (t) => (t.automatic ? h('span', { class: 'chip auto', title: 'Opened automatically by ' + t.reporter.name, text: 'auto · ' + (SOURCE_LABEL[t.source] || t.source) }) : null);
+const dueEl = (t) => (t.due_on ? h('span', { class: 'due' + (t.overdue ? ' overdue' : ''), title: t.overdue ? 'Overdue' : 'Due date', text: (t.overdue ? 'Overdue · ' : 'Due ') + t.due_on }) : null);
+function who(p, none) {
+  if (!p) return h('span', { class: 'who muted' }, h('span', { class: 'avatar none', 'aria-hidden': 'true', text: '–' }), none || 'Unassigned');
+  return h('span', { class: 'who' }, h('span', { class: 'avatar', 'aria-hidden': 'true', text: (p.name || '?').replace(/^system:/, '').charAt(0).toUpperCase() }), p.name);
+}
+const CI_MARK = { green: '✓', red: '✕', pending: '…', none: '' };
+function prMark(pr) {
+  if (!pr) return null;
+  const word = pr.ci === 'green' ? 'CI passed' : pr.ci === 'red' ? 'CI failed' : pr.ci === 'pending' ? 'CI running' : 'no CI result';
+  return h('span', { class: 'prmark ci-' + pr.ci, title: 'PR #' + pr.number + ' · ' + pr.state + ' · ' + word }, icon('pr', 14), '#' + pr.number, h('span', { class: 'ci', 'aria-hidden': 'true', text: CI_MARK[pr.ci] || '' }), h('span', { class: 'sr', text: pr.state + ', ' + word }));
+}
+async function moveTicket(key, status) { return api('/api/tickets/' + encodeURIComponent(key) + '/move', { method: 'POST', body: { status } }); }
+// the keyboard route to moving a ticket: a menu of the other statuses, the ones this role may not use disabled
+function moveMenu(t, done) {
+  const allowed = t.can_move || [];
+  const sel = h('select', { class: 'moveto', 'aria-label': 'Move ' + t.key + ' to', disabled: allowed.length ? null : true, title: allowed.length ? null : 'Your role cannot move this ticket' },
+    h('option', { value: '', text: 'Move to…' }),
+    ['todo', 'doing', 'review', 'done', 'cancelled'].filter((x) => x !== t.status).map((x) => h('option', { value: x, disabled: allowed.includes(x) ? null : true, text: STATUS_LABEL[x] + (allowed.includes(x) ? '' : ' (not allowed)') })));
+  sel.addEventListener('change', async () => {
+    const to = sel.value; sel.value = '';
+    if (!to) return;
+    try { await moveTicket(t.key, to); toast(t.key + ': ' + t.status + ' → ' + to); done(); } catch (e) { toast(e.message, true); }
+  });
+  return sel;
+}
+
+function Card(t, hooks) {
+  const labels = (t.labels || []).slice(0, 3), more = (t.labels || []).length - labels.length;
+  const movable = (t.can_move || []).length > 0;
+  return h('article', { class: 'tcard' + (t.overdue ? ' overdue' : ''), 'data-key': t.key, draggable: movable ? 'true' : null, title: movable ? null : 'Your role cannot move this ticket',
+    ondragstart: (e) => { hooks.drag(t.key); e.dataTransfer.setData('text/plain', t.key); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.classList.add('dragging'); },
+    ondragend: (e) => { hooks.drag(null); e.currentTarget.classList.remove('dragging'); } },
+    h('div', { class: 'row between tight' }, h('a', { class: 'mono small tkey', href: '#/tickets/' + t.key, text: t.key }), autoBadge(t)),
+    h('a', { class: 'ttitle', href: '#/tickets/' + t.key, text: t.title }),
+    h('div', { class: 'row tight' }, prioChip(t.priority), dueEl(t)),
+    labels.length ? h('div', { class: 'row tight' }, labels.map((l) => h('span', { class: 'label', text: l })), more > 0 ? h('span', { class: 'label', title: (t.labels || []).slice(3).join(', '), text: '+' + more }) : null) : null,
+    h('div', { class: 'row between tight' }, who(t.assignee), prMark(t.pr)),
+    moveMenu(t, hooks.reload));
+}
+
+async function Board(into) {
+  const f = { assignee: '', label: '', priority: '', source: '', q: '', unassigned: false, overdue: false };
+  let tickets = [], members = [], summary = null, more = false, seq = 0, dragging = null;
+  const labels = new Set();
+  const board = h('div', { class: 'board', 'aria-label': 'Tickets by status' }), counts = h('p', { class: 'muted', 'aria-live': 'polite' });
+  const sel = (id, label, key, all, opts) => h('div', { class: 'field' }, h('label', { for: id, text: label }),
+    h('select', { id, onchange: (e) => { f[key] = e.target.value; load(); } }, h('option', { value: '', text: all }), opts));
+  const assigneeSel = sel('fa', 'Assignee', 'assignee', 'Everyone', null), labelSel = sel('fl', 'Label', 'label', 'Any label', null);
+  const q = h('input', { id: 'fq', type: 'search', placeholder: 'Title, text or key', 'aria-label': 'Search tickets' });
+  let timer = null;
+  q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { f.q = q.value.trim(); load(); }, 250); });
+  const toggle = (key, text) => { const b = h('button', { class: 'btn toggle', type: 'button', 'aria-pressed': 'false', text, onclick: () => { f[key] = !f[key]; b.setAttribute('aria-pressed', String(f[key])); load(); } }); return b; };
+  const form = h('form', { role: 'search', class: 'row filters', onsubmit: (e) => e.preventDefault() },
+    h('div', { class: 'field' }, h('label', { for: 'fq', text: 'Search' }), q), assigneeSel, labelSel,
+    sel('fp', 'Priority', 'priority', 'Any priority', PRIORITIES.map((p) => h('option', { value: p, text: p }))),
+    sel('fs', 'Source', 'source', 'Any source', Object.entries(SOURCE_LABEL).map(([v, t]) => h('option', { value: v, text: t }))),
+    h('div', { class: 'row tight togglerow' }, toggle('unassigned', 'Unassigned'), toggle('overdue', 'Overdue')));
+
+  function fillSelects() {
+    const keep = (s, v) => { s.value = v; };
+    const a = assigneeSel.querySelector('select'), l = labelSel.querySelector('select');
+    put(a, h('option', { value: '', text: 'Everyone' }), h('option', { value: 'me', text: 'Me' }), members.map((m) => h('option', { value: m.id, text: m.name })));
+    put(l, h('option', { value: '', text: 'Any label' }), [...labels].sort().map((x) => h('option', { value: x, text: x })));
+    keep(a, f.assignee); keep(l, f.label);
+  }
+  function drawCounts() {
+    if (!summary) return;
+    put(counts, summary.open + ' open · ' + summary.overdue + ' overdue · ' + summary.unassigned + ' unassigned' + (more ? ' · showing the newest 200' : ''));
+    S.open = summary.open; refreshBadges();
+  }
+  function draw() {
+    const cols = STATUSES.map((st) => {
+      const list = tickets.filter((t) => t.status === st);
+      const col = h('section', { class: 'bcol', 'aria-label': STATUS_LABEL[st] + ', ' + list.length + ' ticket' + (list.length === 1 ? '' : 's'), 'data-status': st },
+        h('header', { class: 'row between' }, h('h2', { text: STATUS_LABEL[st] }), h('span', { class: 'chip none mono', text: list.length })),
+        st === 'done' ? h('div', { class: 'tiny muted', text: 'Last 7 days' }) : null,
+        h('div', { class: 'bcards' }, list.length ? list.map((t) => Card(t, { drag: (k) => { dragging = k; }, reload: load })) : h('div', { class: 'bempty small muted', text: EMPTY_COL[st] })));
+      col.addEventListener('dragover', (e) => { if (dragging) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; col.classList.add('over'); } });
+      col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('over'); });
+      col.addEventListener('drop', async (e) => {
+        e.preventDefault(); col.classList.remove('over');
+        const key = dragging; dragging = null;
+        const t = tickets.find((x) => x.key === key);
+        if (!t || t.status === st) return;
+        const from = t.status;
+        t.status = st; draw();                                           // move at once; if the Gatekeeper says no, snap back
+        try { const r = await moveTicket(key, st); Object.assign(t, { status: r.status, can_move: r.can_move, updated_at: r.updated_at, closed_at: r.closed_at }); toast(key + ': ' + from + ' → ' + st); load(); }
+        catch (err) { t.status = from; draw(); toast(err.message, true); }
+      });
+      return col;
+    });
+    put(board, cols);
+  }
+  async function load() {
+    const my = ++seq;
+    const p = new URLSearchParams({ board: '1' });
+    for (const [k, v] of Object.entries(f)) { if (v === true) p.set(k, '1'); else if (v) p.set(k, v); }
+    try {
+      let all = [], cursor = null;
+      for (let i = 0; i < 4; i++) {                                      // up to 200 tickets: a small team's board fits
+        const pp = new URLSearchParams(p); if (cursor) pp.set('cursor', cursor);
+        const d = await api('/api/tickets?' + pp); all = all.concat(d.tickets); cursor = d.next; if (!cursor) break;
+      }
+      const sm = await api('/api/tickets/summary');
+      if (my !== seq) return;
+      tickets = all; more = !!cursor; summary = sm;
+      all.forEach((t) => (t.labels || []).forEach((l) => labels.add(l)));
+      fillSelects(); drawCounts(); draw();
+    } catch (e) { if (my === seq && !e.signedOut) toast(e.message, true); }
+  }
+  put(into,
+    h('div', null, h('h1', { text: 'Board' }), counts),
+    h('div', { class: 'note', role: 'note' }, icon('rooms'), h('p', null, 'Create, assign and close tickets in chat with ', mono('@repo-agent'), '. Drag a card to another column, or use its Move to menu, to change its status.')),
+    form, board);
+  members = (await api('/api/members')).members;
+  await load();
+  every(20000, () => { if (!dragging) load(); });
+}
+
+async function TicketPage(into, key) {
+  const t = await api('/api/tickets/' + encodeURIComponent(key));
+  const items = [];
+  for (const e of t.events || []) {
+    if (e.type === 'commented') continue;                                  // the comment itself is shown below
+    const text = { created: 'created the ticket', assigned: 'assigned it to ' + e.to, unassigned: 'unassigned it', status_changed: 'moved it ' + e.from + ' → ' + e.to,
+      priority_changed: 'changed priority ' + e.from + ' → ' + e.to, labels_changed: 'changed labels ' + (e.from || 'none') + ' → ' + (e.to || 'none'), due_changed: 'changed the due date ' + (e.from || 'none') + ' → ' + (e.to || 'none'),
+      linked: 'linked ' + (e.from || '') + ' ' + (e.to || ''), edited: 'edited the ' + (e.to || 'ticket'), closed: 'closed it', reopened: 'reopened it' }[e.type] || e.type;
+    items.push({ at: e.created_at, who: e.actor, text, comment: null });
+  }
+  for (const c of t.comments || []) items.push({ at: c.created_at, who: c.author, text: 'commented', comment: c.body });
+  items.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  const when = (iso) => { const ts = isoTs(iso); return h('span', { class: 'muted', title: fullTime(ts), text: rel(ts) }); };
+  const LINK = { pr: 'Pull request', commit: 'Commit', deploy: 'Deploy', incident: 'Incident', sbom_report: 'SBOM report', alert: 'Alert', ticket: 'Related ticket' };
+  const linkRow = (l) => {
+    let what;
+    if (l.kind === 'pr') what = [l.url && /^https:\/\//.test(l.url) ? h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer', text: 'PR #' + l.ref }) : h('span', { text: 'PR #' + l.ref }), ' ', l.meta.state ? chip(l.meta.state, 'pr-' + l.meta.state) : null, ' ', l.meta.ci && l.meta.ci !== 'none' ? h('span', { class: 'prmark ci-' + l.meta.ci }, 'CI ' + l.meta.ci + ' ', h('span', { class: 'ci', 'aria-hidden': 'true', text: CI_MARK[l.meta.ci] })) : null];
+    else if (l.kind === 'sbom_report') what = h('a', { href: '#/sbom/' + l.ref, text: l.ref });
+    else if (l.kind === 'ticket') what = h('a', { href: '#/tickets/' + l.ref, text: l.ref });
+    else what = mono(l.ref);
+    return h('li', { class: 'linkrow' }, h('span', { class: 'small muted', text: LINK[l.kind] || l.kind }), h('span', null, what));
+  };
+  put(into,
+    h('p', { class: 'small' }, h('a', { href: '#/board', text: '← Board' })),
+    h('div', { class: 'col' }, h('div', { class: 'row' }, mono(t.key, 'tkey'), statusChip(t.status), prioChip(t.priority), autoBadge(t), dueEl(t)), h('h1', { class: 'tkh', text: t.title }),
+      h('div', { class: 'row' }, h('span', { class: 'muted small', text: 'Assignee' }), who(t.assignee), h('span', { class: 'vsep' }), h('span', { class: 'muted small', text: 'Reporter' }), who(t.reporter),
+        (t.labels || []).length ? [h('span', { class: 'vsep' }), (t.labels || []).map((l) => h('span', { class: 'label', text: l }))] : null),
+      h('div', { class: 'row' }, moveMenu(t, () => route()), t.room_url ? h('a', { class: 'btn', href: t.room_url, target: '_blank', rel: 'noopener noreferrer', text: 'Open in chat' + (t.room ? ' · ' + t.room : '') })
+        : t.room ? h('span', { class: 'small muted', text: 'Created in ' + t.room }) : null)),
+    h('div', { class: 'split aside' },
+      h('div', { class: 'col' },
+        h('section', { class: 'card col', 'aria-label': 'Description' }, h('h2', { text: 'Description' }), t.body ? h('div', { class: 'tbody', text: t.body }) : h('p', { class: 'small muted', text: 'No description.' })),
+        h('section', { class: 'col', 'aria-label': 'Timeline' }, h('h2', { text: 'Timeline' }),
+          items.length ? h('ol', { class: 'timeline' }, items.map((i) => h('li', { class: i.comment ? 'tl comment' : 'tl' },
+            h('div', { class: 'row tight small' }, h('strong', { text: (i.who && i.who.name) || 'someone' }), h('span', { text: i.text }), when(i.at)), i.comment ? h('div', { class: 'tbody', text: i.comment }) : null))) : empty('Nothing yet', 'Changes and comments appear here.'))),
+      h('aside', { 'aria-label': 'Links', class: 'card col' }, h('h2', { text: 'Links' }),
+        (t.links || []).length ? h('ul', { class: 'linklist' }, t.links.map(linkRow)) : h('p', { class: 'small muted', text: 'Nothing linked yet. A pull request that says Fixes ' + t.key + ' links itself.' }),
+        h('div', { class: 'tiny muted', text: 'Opened ' + fullTime(isoTs(t.created_at)) }))),
+    h('p', { class: 'small muted', text: 'Create, assign, edit and comment in chat with @repo-agent. This page shows the ticket and moves its status.' }));
+}
+
+// the Overview block: the caller's own open tickets, and the briefing's one-line first step
+function MyTickets(b) {
+  const s = b.summary;
+  return h('section', { class: 'card col', 'aria-label': 'My tickets' },
+    h('div', { class: 'row between' }, h('h2', { text: 'My tickets' }), h('a', { href: '#/board', text: 'Open the Board' })),
+    h('p', { class: 'small muted', text: s.open + ' open on the Board · ' + s.overdue + ' overdue · ' + s.unassigned + ' unassigned · ' + b.mine_total + ' assigned to you' }),
+    b.mine.length ? h('ul', { class: 'mylist' }, b.mine.map((t) => h('li', null, h('a', { class: 'trow', href: '#/tickets/' + t.key }, mono(t.key, 'tkey'), h('span', { class: 'ttl', text: t.title }), statusChip(t.status), prioChip(t.priority), dueEl(t)))),
+      b.mine_total > b.mine.length ? h('li', { class: 'small muted', text: 'and ' + (b.mine_total - b.mine.length) + ' more' }) : null)
+      : h('p', { class: 'small muted', text: 'Nothing is assigned to you.' }),
+    h('div', { class: 'note', role: 'note' }, icon('check'), h('p', null, h('strong', { text: 'First step: ' }), b.first_step)));
+}
+
 // ---- router -------------------------------------------------------------------------------------------------------
-const PAGES = { overview: Overview, audit: Audit, approvals: Approvals, sbom: SbomList, rooms: Rooms, backends: Backends, roles: Roles, agents: Agents };
+const PAGES = { overview: Overview, audit: Audit, approvals: Approvals, board: Board, sbom: SbomList, rooms: Rooms, backends: Backends, roles: Roles, agents: Agents };
 async function route() {
   if (!S.me) return;
   clearTimers();
   const [, name = 'overview', arg] = location.hash.split('/');
-  const key = PAGES[name] ? name : 'overview';
+  const ticketPage = name === 'tickets' && arg && /^[A-Z]{2,6}-\d{1,6}$/.test(arg);
+  const key = name === 'tickets' ? 'board' : PAGES[name] ? name : 'overview';          // chat links point at #/tickets/SY-12; #/tickets alone is the Board
   const into = h('div', { class: 'col' }, skeleton());
   put(root, Chrome(into, name === 'sbom' && arg ? 'sbom' : key));
   const m = document.getElementById('main'); put(m, into);
   try {
-    if (name === 'sbom' && arg && /^[0-9a-f]{7,40}$/.test(arg)) await SbomDetail(into, arg); else await PAGES[key](into);
-    if (key !== 'overview' && key !== 'audit') api('/api/overview').then((o) => { S.approvals = o.approvals.count; setChain(o.chain); }).catch(() => {});
+    if (name === 'sbom' && arg && /^[0-9a-f]{7,40}$/.test(arg)) await SbomDetail(into, arg); else if (ticketPage) await TicketPage(into, arg); else await PAGES[key](into);
+    if (key !== 'overview' && key !== 'audit') api('/api/overview').then((o) => { S.approvals = o.approvals.count; if (o.board) S.open = o.board.summary.open; setChain(o.chain); refreshBadges(); }).catch(() => {});
   } catch (e) {
     if (e.signedOut) return;
     put(into, errorBanner(e.status === 404 ? 'That page does not exist.' : e.message, e.offline ? () => route() : null));

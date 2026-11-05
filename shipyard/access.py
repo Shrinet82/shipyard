@@ -137,6 +137,10 @@ class AgentAccess:
                     rooms |= set(rule["rooms"])
         return users, rooms
 
+    def room_urls(self) -> dict[str, str | None]:
+        """room id -> the chat app's link to it, from one listing of Switch's rooms."""
+        return {r["id"]: r.get("external_channel_url") for r in self._get(self.gateway(), "/rooms") if isinstance(r, dict) and "id" in r}
+
     def rooms(self, project: Project) -> list[dict[str, Any]]:
         """The project's rooms as Switch sees them: which chat app, which group, which agents are in them."""
         gw = self.gateway()

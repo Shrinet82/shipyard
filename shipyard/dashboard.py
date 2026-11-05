@@ -192,7 +192,8 @@ class Dashboard:
             if route == "GET /api/members":
                 return self._members_list(ctx)
             if (m := re.fullmatch(r"/api/tickets/([A-Z]{2,6}-\d{1,6})", path)) and method == "GET":
-                return _json(self._ticket_out(ctx, self.tickets.get(project.name, ctx["identity"], m[1])))
+                t = self.tickets.get(project.name, ctx["identity"], m[1])
+                return _json({**self._ticket_out(ctx, t), "room_url": self._room_url(t.get("room"))})
             if (m := re.fullmatch(r"/api/tickets/([A-Z]{2,6}-\d{1,6})/move", path)) and method == "POST":
                 return self._ticket_move(ctx, m[1], data)
         if (m := re.fullmatch(r"/api/sbom/([0-9a-f]{7,40})", path)) and method == "GET":
@@ -208,7 +209,7 @@ class Dashboard:
         p: Project = c["project"]
         return _json({"identity": self.display(p, c["identity"]), "project": p.name, "role": c["role"].name.lower(),
                       "owner": c["role"] is Role.OWNER, "tz": self.cfg.digest.timezone, "now": self.now(), "expires": c["expires"],
-                      "sbom": self.store is not None, "agents": self.access is not None})
+                      "sbom": self.store is not None, "agents": self.access is not None, "board": self.tickets is not None})
 
     def _logout(self, c) -> Resp:
         self.auth.revoke(c["token"])
@@ -287,6 +288,23 @@ class Dashboard:
             return {"id": ident, "name": ident, "platform": "system", "role": None}
         return self.display(p, ident)
 
+    def _room_url(self, room_id: str | None) -> str | None:
+        """The chat app's own link to a room (for "Open in chat"), from Switch, kept for a minute. None when Switch is not set up or has no link."""
+        if not room_id or self.access is None:
+            return None
+        with self.lock:
+            cached = getattr(self, "_room_urls", None)
+        if cached is None or self.now() - cached[0] > 60:
+            try:
+                urls = self.access.room_urls()
+            except Exception:                                  # Switch unreachable: the page just has no link
+                urls = {}
+            cached = (self.now(), urls)
+            with self.lock:
+                self._room_urls = cached
+        url = cached[1].get(room_id)
+        return url if isinstance(url, str) and url.startswith("https://") else None
+
     def _ticket_out(self, c, t: dict[str, Any]) -> dict[str, Any]:
         p: Project = c["project"]
         out = {k: t[k] for k in ("key", "title", "body", "status", "priority", "due_on", "labels", "source", "automatic", "overdue", "created_at", "updated_at", "closed_at")}
@@ -314,8 +332,9 @@ class Dashboard:
         who = c["identity"] if q.get("assignee", "").lower() == "me" else (q.get("assignee") or None)
         res = self.tickets.list(p.name, c["identity"], assignee=who, status=q.get("status") or None, label=q.get("label") or None, priority=q.get("priority") or None,
                                 source=q.get("source") or None, q=q.get("q", "")[:100] or None, overdue=q.get("overdue") == "1", unassigned=q.get("unassigned") == "1",
-                                cursor=q.get("cursor") or None, limit=50)
-        return _json({"tickets": [self._ticket_out(c, t) for t in res["tickets"]], "next": res["next"]})
+                                include_cancelled=q.get("board") != "1", done_within_days=7 if q.get("board") == "1" else None, cursor=q.get("cursor") or None, limit=50)
+        prs = self.tickets.pr_summaries(p.name, [t["key"] for t in res["tickets"]])
+        return _json({"tickets": [{**self._ticket_out(c, t), "pr": prs.get(t["key"])} for t in res["tickets"]], "next": res["next"]})
 
     def _members_list(self, c) -> Resp:
         p: Project = c["project"]

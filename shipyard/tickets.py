@@ -468,7 +468,7 @@ class Tickets:
 
     def list(self, project: str, caller: str, *, assignee: str | None = None, status: str | None = None, label: str | None = None,
              priority: str | None = None, source: str | None = None, overdue: bool = False, q: str | None = None, unassigned: bool = False,
-             include_cancelled: bool = True, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+             include_cancelled: bool = True, done_within_days: int | None = None, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
         self._check_role(project, caller)
         where, args = ["project=?", "deleted_at IS NULL"], [project]
         if assignee:
@@ -484,6 +484,9 @@ class Tickets:
                 args.append(status)
         if not include_cancelled:
             where.append("status!='cancelled'")
+        if done_within_days:                                         # the board shows what was finished in the last few days, not the whole history
+            where.append("(status!='done' OR closed_at >= ?)")
+            args.append(_now_iso(self.now() - done_within_days * 86400))
         if priority:
             where.append("priority=?")
             args.append(self._priority(priority))
@@ -518,6 +521,20 @@ class Tickets:
         more = len(rows) > limit
         rows = rows[:limit]
         return {"tickets": [self._view(r) for r in rows], "next": f"{rows[-1]['updated_at']}|{rows[-1]['id']}" if more else None}
+
+    def pr_summaries(self, project: str, keys: list[str]) -> dict[str, dict[str, Any]]:
+        """The newest linked pull request of each ticket (number, state, CI, url), for the board's cards."""
+        if not keys:
+            return {}
+        with self.gk.lock:
+            rows = self.gk.db.execute(
+                "SELECT t.key, l.ref, l.url, l.meta FROM ticket_links l JOIN tickets t ON t.id = l.ticket_id WHERE t.project=? AND l.kind='pr' AND t.key IN (%s) ORDER BY l.id"
+                % ",".join("?" * len(keys)), (project, *keys)).fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for key, ref, url, meta in rows:
+            m = json.loads(meta)
+            out[key] = {"number": ref, "url": url, "state": m.get("state", "open"), "ci": m.get("ci", "none")}
+        return out
 
     def summary(self, project: str, caller: str) -> dict[str, Any]:
         self._check_role(project, caller)

@@ -131,3 +131,33 @@ def test_without_the_board_the_endpoints_are_not_there(env, tmp_path):  # noqa: 
     tok = auth.issue(OWNER, "demo")
     r = dash.handle("GET", "/api/tickets", {"host": "localhost", "authorization": "Bearer " + tok})
     assert r.status == 404 and json.loads(dash.handle("GET", "/api/overview", {"host": "localhost", "authorization": "Bearer " + tok}).body)["board"] is None
+
+
+# --- what the Board page needs -------------------------------------------------------------------------------------------
+
+def test_the_board_view_hides_cancelled_and_old_done_tickets_and_carries_the_linked_pr(api):
+    seed(api)
+    api.api("POST", "/api/tickets/SY-1/move", "maint", {"status": "doing"})
+    api.api("POST", "/api/tickets/SY-1/move", "maint", {"status": "review"})
+    api.api("POST", "/api/tickets/SY-1/move", "maint", {"status": "done"})
+    api.api("POST", "/api/tickets/SY-2/move", "maint", {"status": "cancelled"})
+    api.t.link("demo", "system:github", "SY-3", "pr", "26", "https://github.com/o/r/pull/26", system=True, meta={"state": "open", "ci": "green"})
+    s, d = api.api("GET", "/api/tickets?board=1")
+    assert s == 200 and sorted(t["key"] for t in d["tickets"]) == ["SY-1", "SY-3"]
+    by = {t["key"]: t for t in d["tickets"]}
+    assert by["SY-3"]["pr"] == {"number": "26", "url": "https://github.com/o/r/pull/26", "state": "open", "ci": "green"} and by["SY-1"]["pr"] is None
+    assert sorted(t["key"] for t in api.api("GET", "/api/tickets")[1]["tickets"]) == ["SY-1", "SY-2", "SY-3"]              # the plain list still shows everything
+    api.t.gk.db.execute("UPDATE tickets SET closed_at='2020-01-01T00:00:00Z' WHERE key='SY-1'")                             # finished long ago: it drops off the board
+    assert [t["key"] for t in api.api("GET", "/api/tickets?board=1")[1]["tickets"]] == ["SY-3"]
+
+
+def test_me_says_whether_the_board_is_on_and_the_ticket_page_gets_a_chat_link(api):
+    seed(api)
+    assert api.api("GET", "/api/me")[1]["board"] is True
+    api.dash.access = type("A", (), {"room_urls": lambda s: {OPS: "https://chat.example/ops", MAINT: "javascript:alert(1)"}})()
+    api.t.gk.db.execute("UPDATE tickets SET room=? WHERE key='SY-1'", (OPS,))
+    api.t.gk.db.execute("UPDATE tickets SET room=? WHERE key='SY-2'", (MAINT,))
+    assert api.api("GET", "/api/tickets/SY-1")[1]["room_url"] == "https://chat.example/ops"
+    assert api.api("GET", "/api/tickets/SY-2")[1]["room_url"] is None                                                       # only https links are passed on
+    api.dash.access = None
+    assert api.api("GET", "/api/tickets/SY-1")[1]["room_url"] is None                                                       # no Switch: no link, no error
