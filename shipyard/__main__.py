@@ -24,6 +24,7 @@ from .access import AgentAccess, Gateway, read_env
 from .clusterwatch import ClusterWatcher
 from .coolify import CoolifyMcp
 from .desks import Desks
+from .roomsync import RoomSync
 from .incidents import Incidents
 from .dashauth import DashAuth
 from .dashboard import Dashboard, serve as serve_dashboard
@@ -86,7 +87,7 @@ def _start_dashboard(cfg, gk, auth, collector, members, service, coolify, kube, 
     gateway = _gateway_factory(cfg)
     health = Health(cfg, coolify=coolify, kube=kube, github=github, hostshell=hostshell, gateway=gateway)
     access = AgentAccess(cfg, gateway, db, gk.lock, gk.audit) if gateway else None
-    dash = Dashboard(cfg, gk, auth, collector.store if collector else None, health, members, access, service._name, flow=service.flow)
+    dash = Dashboard(cfg, gk, auth, collector.store if collector else None, health, members, access, service._name, flow=service.flow, roomsync=service.roomsync)
     threading.Thread(target=health.loop, args=(stop,), daemon=True).start()
     serve_dashboard(dash, cfg.dashboard.bind, cfg.dashboard.port)
 
@@ -133,6 +134,11 @@ def run(config_path: str) -> None:
     service.incidents = Incidents(db, gk.lock, gk.audit, service.now)
     service.desks = Desks(cfg, expand(cfg.desks_file), gk.audit, _gateway_factory(cfg))
     service.desks.load()
+    gateway = _gateway_factory(cfg)
+    access_for_sync = AgentAccess(cfg, gateway, db, gk.lock, gk.audit) if gateway else None
+    service.roomsync = RoomSync(cfg, expand(cfg.rooms_file), gk.audit, gateway, service.desks, access_for_sync.apply if access_for_sync else None) if gateway else None
+    if service.roomsync:
+        service.roomsync.load()
     serve(service, cfg.mcp_port, open(expand(cfg.mcp_token_file)).read().strip())
     gh_secret_file = expand(cfg.github.webhook_secret_file)
     gh_secret = open(gh_secret_file).read().strip().encode() if os.path.exists(gh_secret_file) else None

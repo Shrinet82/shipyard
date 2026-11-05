@@ -426,7 +426,26 @@ async function SbomDetail(into, commit) {
 async function Rooms(into) {
   const d = await api('/api/rooms');
   const KIND = { ops: 'Deploys and commands', incidents: 'Alerts and diagnosis', maintainers: 'Pull requests and SBOM reports' };
-  put(into, h('div', null, h('h1', { text: 'Switch rooms' }), h('p', { class: 'muted', text: 'The rooms of project ' + d.project + ' as Switch has them: the chat app, the group they are linked in, and which agents are in each.' })),
+  const preview = h('div');
+  async function check() {
+    try {
+      const p = await api('/api/rooms/preview', { method: 'POST', body: {} });
+      if (!p.changes.length) { put(preview, h('div', { class: 'note' }, icon('check'), 'Every chat app already has the full set of rooms.')); return; }
+      put(preview, h('section', { class: 'card col', 'aria-labelledby': 'rv' }, h('div', { class: 'row between' }, h('h2', { id: 'rv', text: 'Preview: ' + p.changes.length + ' thing' + (p.changes.length === 1 ? '' : 's') + ' to create' }),
+        h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: () => put(preview), text: 'Cancel' }), h('button', { class: 'btn primary', type: 'button', onclick: make, text: 'Create in Switch' }))),
+        h('div', { class: 'diff' }, p.changes.map((c) => h('div', { class: 'add' }, h('span', { text: c.op }), h('span', { text: c.agent }), h('span', { class: 'small', text: c.text })))),
+        h('p', { class: 'small muted', text: 'Rooms are created in each chat app through Switch, the agents are added, and agent access is synced so they answer there. Nothing is created until you press the button.' })));
+    } catch (e) { toast(e.message, true); }
+  }
+  async function make() {
+    try {
+      const r = await api('/api/rooms/sync', { method: 'POST', body: {} });
+      toast('Created ' + (r.rooms.length + r.desks.length) + ' room' + (r.rooms.length + r.desks.length === 1 ? '' : 's') + (r.agent_access_synced ? '; agent access synced.' : '.') + (r.problems.length ? ' Problems: ' + r.problems.slice(0, 2).join('; ') : ''), r.problems.length > 0);
+      Rooms(into);
+    } catch (e) { toast('Sync failed: ' + e.message, true); }
+  }
+  put(into, h('div', { class: 'row between' }, h('div', null, h('h1', { text: 'Switch rooms' }), h('p', { class: 'muted', text: 'The rooms of project ' + d.project + ' as Switch has them: the chat app, the group they are linked in, and which agents are in each.' })),
+      S.me.owner && S.me.roomsync ? h('button', { class: 'btn primary big', type: 'button', onclick: check, text: 'Sync rooms' }) : null), preview,
     d.rooms.length ? h('div', { class: 'agentgrid' }, d.rooms.map((r) => h('article', { class: 'card col' },
       h('div', { class: 'row between' }, h('h2', { text: '#' + r.name.replace(/^#/, '') }), h('span', { class: 'chip none', text: r.kind })),
       h('p', { class: 'small muted', text: KIND[r.kind] || '' }),

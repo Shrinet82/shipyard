@@ -37,6 +37,7 @@ kubernetes:                                   # one least-privilege ServiceAccou
   max_replicas: 10
   kubeconfigs: {viewer: ~/kube/viewer.kubeconfig, deployer: ~/kube/deployer.kubeconfig, ops: ~/kube/ops.kubeconfig}
 
+rooms_file: ~/shipyard-rooms.json             # rooms made by the room sync (dashboard: Switch rooms → Sync rooms; chat: `@gatekeeper rooms sync`)
 desks_file: ~/shipyard-desks.json             # which personal desk room is whose (`@gatekeeper desks create`)
 projects:
   demo:

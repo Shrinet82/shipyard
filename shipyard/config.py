@@ -150,6 +150,7 @@ class Config:
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
     desks: dict[str, dict[str, str]] = field(default_factory=dict, compare=False)     # project -> member identity -> personal desk room (filled at start-up)
     desks_file: str = "~/shipyard-desks.json"
+    rooms_file: str = "~/shipyard-rooms.json"                 # rooms made by the room sync, remembered here
 
     def project_for_room(self, room_id: str) -> Project | None:
         return next((p for p in self.projects.values() if room_id in p.rooms or room_id in self.desks.get(p.name, {}).values()), None)
@@ -300,6 +301,7 @@ def load_config(path: str | Path) -> Config:
         kube=kube,
         raw=raw,
         desks_file=str(raw.get("desks_file", "~/shipyard-desks.json")),
+        rooms_file=str(raw.get("rooms_file", "~/shipyard-rooms.json")),
     )
 
 

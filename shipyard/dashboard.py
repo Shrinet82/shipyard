@@ -63,7 +63,8 @@ def _err(status: int, message: str) -> Resp:
 class Dashboard:
     def __init__(self, cfg: Config, gk: Gatekeeper, auth: DashAuth, store: SbomStore | None, health: Health, members: MemberStore,
                  access: AgentAccess | None, names: Callable[[str], str], github_repo_url: str = "https://github.com",
-                 now: Callable[[], float] = time.time, flow: Any = None):
+                 now: Callable[[], float] = time.time, flow: Any = None, roomsync: Any = None):
+        self.roomsync = roomsync                          # RoomSync, when Switch's admin login is set up
         self.cfg, self.gk, self.auth, self.store, self.health, self.members, self.access = cfg, gk, auth, store, health, members, access
         self.flow = flow                                  # the Board, when it is on
         self.tickets = flow.t if flow is not None else None
@@ -179,7 +180,9 @@ class Dashboard:
             return self._refresh(ctx, data)
         owner_only = {"POST /api/roles": lambda: self._roles_save(ctx, data),
                       "POST /api/agents/preview": lambda: self._agents_preview(ctx),
-                      "POST /api/agents/sync": lambda: self._agents_sync(ctx)}
+                      "POST /api/agents/sync": lambda: self._agents_sync(ctx),
+                      "POST /api/rooms/preview": lambda: self._rooms_preview(ctx),
+                      "POST /api/rooms/sync": lambda: self._rooms_sync(ctx)}
         if route in owner_only:
             if role is not Role.OWNER:
                 return _err(403, "only an owner can do that")
@@ -209,7 +212,7 @@ class Dashboard:
         p: Project = c["project"]
         return _json({"identity": self.display(p, c["identity"]), "project": p.name, "role": c["role"].name.lower(),
                       "owner": c["role"] is Role.OWNER, "tz": self.cfg.digest.timezone, "now": self.now(), "expires": c["expires"],
-                      "sbom": self.store is not None, "agents": self.access is not None, "board": self.tickets is not None})
+                      "sbom": self.store is not None, "agents": self.access is not None, "board": self.tickets is not None, "roomsync": self.roomsync is not None})
 
     def _logout(self, c) -> Resp:
         self.auth.revoke(c["token"])
@@ -466,6 +469,22 @@ class Dashboard:
             return _err(404, "agent access is not configured")
         p: Project = c["project"]
         return _json(self.access.state(p, lambda i: self.display(p, i), lambda r: self.room(p, r)) | {"editable": c["role"] is Role.OWNER})
+
+    def _rooms_preview(self, c) -> Resp:
+        if self.roomsync is None:
+            return _err(404, "room sync is not configured")
+        try:
+            return _json({"changes": self.roomsync.preview(c["project"])})
+        except Exception as exc:                                     # Switch unreachable or refusing: the message is safe to show
+            return _err(502, str(exc)[:200])
+
+    def _rooms_sync(self, c) -> Resp:
+        if self.roomsync is None:
+            return _err(404, "room sync is not configured")
+        try:
+            return _json(self.roomsync.apply(c["project"], c["identity"]))
+        except Exception as exc:
+            return _err(502, str(exc)[:200])
 
     def _agents_preview(self, c) -> Resp:
         if self.access is None:

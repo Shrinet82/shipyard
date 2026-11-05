@@ -38,7 +38,7 @@ listed as future scope.
 
 | # | Gap | Notes |
 |---|---|---|
-| P1 | **A new room needs "Sync from roles"** on the dashboard, or Switch refuses the Gatekeeper's mention of the agents there (found when the incidents room was added). | Documented in the README. `init` creates rooms for new installs but does not run the sync for agents that already exist. A doctor check could warn. |
+| P1 | **A new room needs "Sync from roles"** (the room sync does this itself for the rooms it creates; rooms made by hand still need it) on the dashboard, or Switch refuses the Gatekeeper's mention of the agents there (found when the incidents room was added). | Documented in the README. `init` creates rooms for new installs but does not run the sync for agents that already exist. A doctor check could warn. |
 | P2 | **No LICENSE file** in the repository. | The hackathon may expect one. This is your decision. |
 | P3 | **Coolify token** is full access (needed by the Gatekeeper for deploy, rollback and logs). The agents hold none. | Low priority. |
 | P4 | **SBOM history** is stored per commit but the dashboard lists them flat, with no per-release timeline. | Future scope. |

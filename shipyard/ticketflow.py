@@ -335,6 +335,11 @@ class TicketFlow:
         clean = _clip(text, 900)
         self.t.system_set_body(project, key, clean, "system:diagnosis")
         self.t.comment(project, "system:diagnosis", key, "Ops Agent's diagnosis:\n" + clean[:1800], author="system:diagnosis")
+        p = self.svc.cfg.projects.get(project)
+        if p is not None:                                               # the other chat apps' alert rooms hear it too
+            label = p.room_names.get(room, "the incidents room")
+            for r in sorted(p.alert_rooms - {room}):
+                self.svc.post(r, f"Ops Agent's diagnosis (from {label}):\n{defuse(redact(clean))}")
 
     def on_gate_block(self, project, room: str, app: str, label: str, commit: str, report: dict[str, Any] | None) -> list[str]:
         """One urgent ticket per new critical CVE (deduped by CVE and app), linked to the SBOM report."""

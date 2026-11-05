@@ -71,6 +71,7 @@ class Service:
         self.flow: Any = None                   # the Board (TicketFlow), when it is on
         self.incidents: Any = None              # Incidents, when the Board is on
         self.desks: Any = None                  # Desks (personal rooms), when set up
+        self.roomsync: Any = None               # RoomSync, when Switch's admin login is set up
         self.github_hooks: list[Callable[[str, dict[str, Any]], None]] = []   # who wants to hear that GitHub's webhook fired
         self.sbom = sbom                       # an SbomCollector, or None when the SBOM gate is not configured
         self.agent_name = agent_name
@@ -151,6 +152,8 @@ class Service:
             return self._incident(project, sender, cmd)
         if cmd.verb == "desks":
             return self._desks(project, sender, cmd)
+        if cmd.verb == "rooms":
+            return self._rooms(project, sender, cmd)
         if cmd.verb == "whoami":
             role = self.cfg.policy.members.get(project.name, {}).get(sender)
             return f"Your id is `{sender}`. Your role in {project.name}: {role.name.lower() if role else 'none'}."
@@ -213,6 +216,23 @@ class Service:
         if ticket:
             return f"{inc['key']} closed. Follow-ups are on the Board as {ticket}" + (f": {base}/#/tickets/{ticket}" if base else ".")
         return f"{inc['key']} closed. No follow-ups were named, so no ticket was made."
+
+    def _rooms(self, project: Project, sender: str, cmd: Command) -> str:
+        if self.cfg.policy.members.get(project.name, {}).get(sender) is not Role.OWNER:
+            return self._deny(project, sender, "rooms", "", "only an owner manages the project's rooms")
+        if self.roomsync is None:
+            return "Room sync is not set up on this install (it needs Switch's admin login)."
+        try:
+            if cmd.args and cmd.args[0].lower() == "sync":
+                out = self.roomsync.apply(project, sender)
+                text = ("Created " + ", ".join(out["rooms"] + out["desks"]) + "." if out["rooms"] or out["desks"] else "Every chat app already has the full set of rooms.")
+                return text + (" Agent access was synced, so the agents answer there." if out["agent_access_synced"] else "") + (" Problems: " + "; ".join(out["problems"][:3]) if out["problems"] else "")
+            if cmd.args:
+                return f"Usage: {USAGE['rooms']}"
+            changes = self.roomsync.preview(project)
+        except Exception as exc:
+            return f"Could not check the rooms: {exc}"
+        return ("Missing: " + "; ".join(f"{c['agent']}: {c['text']}" for c in changes[:6]) + ". `@gatekeeper rooms sync` makes them.") if changes else "Every chat app has the full set of rooms."
 
     def _desks(self, project: Project, sender: str, cmd: Command) -> str:
         if self.cfg.policy.members.get(project.name, {}).get(sender) is not Role.OWNER:
@@ -1079,16 +1099,16 @@ class Service:
             if self.flow is not None:
                 self.flow.on_alert(project, app, kind, payload, lines, sorted(project.ops_rooms), sorted(project.ops_rooms), incident=inc["key"] if inc else None)
             return
-        # An incidents room exists: it gets the full alert and the Ops Agent is asked there. The ops rooms get the same evidence and a
-        # pointer, without a second request to the agent, so it diagnoses once.
-        where = ", ".join(sorted(project.room_names.get(r, "the incidents room") for r in project.incident_rooms))
-        pointer = text.split(f"@{agent} diagnose", 1)[0] + f"The Ops Agent's diagnosis will follow in {where}."
-        for room in sorted(project.incident_rooms):
-            self.post(room, text)
-        for room in sorted(project.ops_rooms):
+        # Incidents rooms exist: the first gets the full alert and the Ops Agent is asked there, once. Every other alert room (the other chat apps'
+        # incidents rooms, and the ops rooms) gets the same evidence, and the diagnosis is copied to them when the agent has answered.
+        main = sorted(project.incident_rooms)[0]
+        where = project.room_names.get(main, "the incidents room")
+        pointer = text.split(f"@{agent} diagnose", 1)[0] + f"The Ops Agent's diagnosis will follow in {where}, and is copied here."
+        self.post(main, text)
+        for room in [*sorted(project.incident_rooms - {main}), *sorted(project.ops_rooms)]:
             self.post(room, pointer)
         if self.flow is not None:
-            self.flow.on_alert(project, app, kind, payload, lines, [*sorted(project.incident_rooms), *sorted(project.ops_rooms)], sorted(project.incident_rooms), incident=inc["key"] if inc else None)
+            self.flow.on_alert(project, app, kind, payload, lines, [*sorted(project.incident_rooms), *sorted(project.ops_rooms)], [main], incident=inc["key"] if inc else None)
 
     # -- housekeeping ---------------------------------------------------------
 
