@@ -72,7 +72,7 @@ You need a machine that already runs **Switch** (with its admin login in `~/swit
 
 1. **Switch and Mattermost**: `scripts/install-switch.sh` (Docker, pinned Switch 0.31.0, the bundled Mattermost, agent management turned on).
 2. **The agents' controller** (only if you want the Ops and Repo agents): `scripts/install-controller.sh` installs Node 22, the Codex CLI and Switch's agent controller and runs it as an unprivileged user, `agentrun`. Then, once, as a person: `sudo -u agentrun -H codex login --device-auth`, and `sudo systemctl restart switch-agents` so Switch sees Codex as ready. Do this **before** `init`, or the template cannot create the agents.
-3. **Coolify** (optional), on its own machine: `curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash`. Create the root account **within 10 minutes** of it starting; if the page says the setup window is closed, run `docker restart coolify` on that machine and reload. Then, in Settings, enable **API access** and **MCP**, and create an API token (read, write and deploy).
+3. **Coolify** (optional), on its own machine: `curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash`. Create the root account **within 10 minutes** of it starting; if the page says the setup window is closed, run `docker restart coolify` on that machine and reload. Then, in Settings, enable **API access** and **MCP**, and create an API token with **read, read:sensitive, write and deploy** (without `read:sensitive` Coolify refuses to return an app's logs, so alerts carry no log lines).
 4. **Shipyard**: the command below. Put the Coolify token in the `COOLIFY_TOKEN` environment variable.
 
 ```bash

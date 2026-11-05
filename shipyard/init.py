@@ -197,7 +197,7 @@ class Installer:
         url = self.get("coolify.url", "Coolify URL, e.g. http://10.0.0.5:8000 (blank to skip)", "").rstrip("/")
         if not url:
             return "", "", {}
-        token = os.environ.get("COOLIFY_TOKEN") or self.get("coolify.token", "Coolify API token (needs Read, Write, Deploy; input hidden)", secret=True, required=True)
+        token = os.environ.get("COOLIFY_TOKEN") or self.get("coolify.token", "Coolify API token (needs read, read:sensitive, write and deploy; input hidden)", secret=True, required=True)
         status, rows = self.http("GET", f"{url}/api/v1/applications", {"Authorization": f"Bearer {token}"})
         if status != 200 or not isinstance(rows, list):
             raise InitError(f"Coolify refused the token or the URL ({status})")
