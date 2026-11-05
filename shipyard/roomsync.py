@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 import re
 import tempfile
@@ -21,6 +22,7 @@ from typing import Any, Callable
 from .audit import AuditLog
 from .config import Config, Project
 
+log = logging.getLogger("shipyard.roomsync")
 KINDS = ("ops", "maintainers", "incidents")
 AGENTS = {"ops": ("ops-agent",), "maintainers": ("repo-agent",), "incidents": ("ops-agent",)}
 WHAT = {"ops": "Deploys, rollbacks, status and logs. Commands are mentions of @gatekeeper.",
@@ -39,6 +41,7 @@ class RoomSync:
         self.cfg, self.path, self.audit, self.gateway = cfg, Path(path), audit, gateway
         self.desks, self.access_sync = desks, access_sync
         self.lock = threading.RLock()
+        self.running = threading.Lock()                                        # one sync at a time: a double click must not make everything twice
 
     # -- the overlay -----------------------------------------------------------------------------------
 
@@ -139,8 +142,17 @@ class RoomSync:
     # -- making them -------------------------------------------------------------------------------------
 
     def apply(self, project: Project, actor: str) -> dict[str, Any]:
+        if not self.running.acquire(blocking=False):
+            raise RoomSyncError("A room sync is already running. Wait for it to finish.")
+        try:
+            return self._apply(project, actor)
+        finally:
+            self.running.release()
+
+    def _apply(self, project: Project, actor: str) -> dict[str, Any]:
         gw = self._need_gateway()
         world = self._world(gw)
+        project = self.cfg.projects[project.name]                           # the latest one: a sync that just finished may have added rooms
         made: list[str] = []
         problems: list[str] = []
         added: dict[str, dict[str, str]] = {}
@@ -153,12 +165,16 @@ class RoomSync:
                 status, body = gw.call("POST", f"/rooms/{room_id}/agents", {"agent_ids": ids})
                 if status not in (200, 201):
                     problems.append(f"{label}: could not add the agents ({status})")
+                    log.warning("room sync: could not add agents to %s: %s %s", label, status, str(body)[:200])
                     continue
             else:
                 body = {"name": it["name"], "description": WHAT[it["kind"]], "agent_names": agent_names, "bridge_id": it["bridge"], "group_id": it["group"]}
                 status, room = gw.call("POST", "/rooms", {k: v for k, v in body.items() if v is not None})
                 if status not in (200, 201) or not isinstance(room, dict) or "id" not in room:
                     problems.append(f"{label}: Switch answered {status} {str(room)[:100]}")
+                    log.warning("room sync: Switch refused to create %s: %s %s", label, status, str(room)[:300])
+                    if self.audit:
+                        self.audit.write(project=project.name, actor=actor, event="failed", action="rooms.sync", target=label, error=f"Switch answered {status}: {str(room)[:120]}")
                     continue
                 room_id = room["id"]
             added.setdefault(it["kind"], {})[room_id] = label

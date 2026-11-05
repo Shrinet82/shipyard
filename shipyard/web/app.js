@@ -437,12 +437,15 @@ async function Rooms(into) {
         h('p', { class: 'small muted', text: 'Rooms are created in each chat app through Switch, the agents are added, and agent access is synced so they answer there. Nothing is created until you press the button.' })));
     } catch (e) { toast(e.message, true); }
   }
-  async function make() {
+  let busy = false;
+  async function make(e) {
+    if (busy) return;                                                  // a second click would start a second sync
+    busy = true; if (e && e.target) e.target.disabled = true;
     try {
       const r = await api('/api/rooms/sync', { method: 'POST', body: {} });
       toast('Created ' + (r.rooms.length + r.desks.length) + ' room' + (r.rooms.length + r.desks.length === 1 ? '' : 's') + (r.agent_access_synced ? '; agent access synced.' : '.') + (r.problems.length ? ' Problems: ' + r.problems.slice(0, 2).join('; ') : ''), r.problems.length > 0);
       Rooms(into);
-    } catch (e) { toast('Sync failed: ' + e.message, true); }
+    } catch (err) { busy = false; if (e && e.target) e.target.disabled = false; toast('Sync failed: ' + err.message, true); }
   }
   put(into, h('div', { class: 'row between' }, h('div', null, h('h1', { text: 'Switch rooms' }), h('p', { class: 'muted', text: 'The rooms of project ' + d.project + ' as Switch has them: the chat app, the group they are linked in, and which agents are in each.' })),
       S.me.owner && S.me.roomsync ? h('button', { class: 'btn primary big', type: 'button', onclick: check, text: 'Sync rooms' }) : null), preview,

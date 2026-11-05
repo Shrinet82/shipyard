@@ -62,7 +62,12 @@ class Desks:
         """Make the missing desks. Returns (names made, problems). One member failing does not stop the others."""
         if self.gateway is None:
             raise DeskError("Switch's admin login is not set up here (gateway_env_file), so I can't create rooms.")
-        todo = identities if identities is not None else self.missing(project)
+        with self.lock:
+            return self._create(project, actor, identities)
+
+    def _create(self, project: Project, actor: str, identities: list[str] | None) -> tuple[list[str], list[str]]:
+        have = self.cfg.desks.get(project.name, {})
+        todo = [i for i in (identities if identities is not None else self.missing(project)) if i not in have]       # re-read under the lock: never twice for one person
         if not todo:
             return [], []
         gw = self.gateway()
@@ -74,6 +79,8 @@ class Desks:
         if not details:
             raise DeskError("None of the project's rooms could be read from Switch, so there is nothing to copy the chat app from.")
         members = self.cfg.policy.members.get(project.name, {})
+        status, listing = gw.call("GET", "/rooms")
+        rooms_now = listing if status == 200 and isinstance(listing, list) else []
         made, problems = [], []
         for ident in todo:
             user = username_of(ident)
@@ -89,7 +96,11 @@ class Desks:
             body = {"name": name, "description": f"Personal desk for {user}: your briefing and tickets. Only you and the owners are here.",
                     "channel_type": "channel_private", "agent_names": [AGENT, "gatekeeper"], "user_names": sorted({user, *owners}),
                     "bridge_id": bridge, "group_id": details[bridge].get("group_id")}
-            status, room = gw.call("POST", "/rooms", {k: v for k, v in body.items() if v is not None})
+            existing = next((r for r in rooms_now if r.get("name") == name and r.get("bridge_id") == bridge), None)
+            if existing is not None:                                            # a desk made earlier and not remembered: take it, do not make a second
+                status, room = 200, {"id": existing["id"]}
+            else:
+                status, room = gw.call("POST", "/rooms", {k: v for k, v in body.items() if v is not None})
             if status not in (200, 201) or not isinstance(room, dict) or "id" not in room:
                 problems.append(f"{name}: Switch answered {status} {str(room)[:100]}")
                 continue

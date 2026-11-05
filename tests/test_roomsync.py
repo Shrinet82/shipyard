@@ -166,3 +166,39 @@ def test_the_rooms_command_is_for_owners_and_previews_before_it_syncs(sync):
     assert "Created #demo-incidents (ShipYard)" in sync.last() and "Agent access was synced" in sync.last()
     sync.say(OWNER, "rooms")
     assert "Every chat app has the full set of rooms" in sync.last() or "Missing: desks" in sync.last()
+
+
+def test_two_syncs_at_once_do_not_make_everything_twice(sync):
+    import threading
+    import time
+    real = sync.world.call
+    def slow(method, path, body=None):
+        if method == "POST" and path == "/rooms":
+            time.sleep(0.15)
+        return real(method, path, body)
+    sync.world.call = slow
+    results, errors = [], []
+    def go():
+        try:
+            results.append(sync.rs.apply(sync.cfg.projects["demo"], OWNER))
+        except RoomSyncError as exc:
+            errors.append(str(exc))
+    threads = [threading.Thread(target=go) for _ in range(3)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    posts = [c[2]["name"] for c in sync.world.calls if c[:2] == ("POST", "/rooms")]
+    assert sorted(posts) == sorted(set(posts)) and posts.count("demo-incidents") == 1 and posts.count("demo-desk-drew") == 1
+    assert len(results) == 1 and len(errors) == 2 and "already running" in errors[0]
+
+
+def test_a_desk_that_already_exists_in_switch_is_adopted_not_made_again(sync):
+    sync.world.rooms.append({"id": "old-desk", "name": "demo-desk-drew", "bridge_id": DISCORD, "bridge_type": "discord", "group_id": None})
+    made, problems = sync.svc.desks.create(sync.cfg.projects["demo"], OWNER, [DREW])
+    assert made == ["demo-desk-drew"] and sync.cfg.desks["demo"][DREW] == "old-desk" and not [c for c in sync.world.calls if c[0] == "POST" and c[2]["name"] == "demo-desk-drew"]
+    assert sync.svc.desks.create(sync.cfg.projects["demo"], OWNER, [DREW]) == ([], [])
+
+
+def test_a_refused_room_is_logged_and_audited(sync):
+    sync.world.fail = True
+    sync.rs.apply(sync.cfg.projects["demo"], OWNER)
+    assert any(r["event"] == "failed" and r["action"] == "rooms.sync" for r in sync.gk.audit.recent("demo", 50))
