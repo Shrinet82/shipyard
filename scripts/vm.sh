@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Manage the Shipyard dev VMs (AWS profile new-account, Mumbai).
-#   scripts/vm.sh status | start | stop | ssh build|coolify [cmd...] | put <local> <remote-path-on-build> | myip | tunnel [mattermost]
+#   scripts/vm.sh status | start | stop | ssh build|coolify [cmd...] | put <local> <remote-path-on-build> | myip | tunnel [mattermost] [switch]
 set -euo pipefail
 export AWS_PROFILE=${AWS_PROFILE:-new-account} AWS_REGION=ap-south-1
 KEY=$HOME/.ssh/shipyard-dev
@@ -24,12 +24,15 @@ case "${1:-status}" in
   stop)   aws ec2 stop-instances --instance-ids $(ids) >/dev/null; echo "stopping; disks still bill (~\$0.36/day)"; status ;;
   ssh)    host=$(ip_of "$2"); shift 2; exec ssh ${SSH_TTY:+-t} -i "$KEY" -o StrictHostKeyChecking=accept-new ubuntu@"$host" "$@" ;;
   put)    host=$(ip_of build); exec scp -i "$KEY" -o StrictHostKeyChecking=accept-new "$2" ubuntu@"$host":"$3" ;;
-  tunnel) host=$(ip_of build); fwd=()
+  tunnel) host=$(ip_of build); fwd=(); shift
           busy() { (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null; }          # something already listens on that local port (an earlier tunnel)
-          if busy 8780; then echo "dashboard: already forwarded by another tunnel on http://localhost:8780"; else fwd+=(-L 8780:localhost:8780); echo "dashboard on http://localhost:8780"; fi
-          if [ "${2:-}" = mattermost ]; then
-            if busy 8065; then echo "Mattermost: already forwarded on http://localhost:8065"; else fwd+=(-L 8065:localhost:8065); echo "Mattermost on http://localhost:8065"; fi
-          fi
+          want() { local name=$1 port=$2   # forward a port unless an earlier tunnel already holds it
+            if busy "$port"; then echo "$name: already forwarded by another tunnel on http://localhost:$port"; else fwd+=(-L "$port:localhost:$port"); echo "$name on http://localhost:$port"; fi; }
+          want "Shipyard dashboard" 8780
+          for what in "$@"; do case "$what" in
+            mattermost) want "Mattermost" 8065 ;;
+            switch)     want "Switch Console" 8000 ;;
+            *) echo "unknown tunnel target: $what (use mattermost and/or switch)"; exit 2 ;; esac; done
           [ ${#fwd[@]} -gt 0 ] || { echo "nothing new to forward"; exit 0; }
           echo "(Ctrl-C closes the tunnel)"
           exec ssh -N -i "$KEY" -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes "${fwd[@]}" ubuntu@"$host" ;;
@@ -40,5 +43,5 @@ case "${1:-status}" in
             for c in $old; do aws ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr "$c" >/dev/null; done
             aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr "$me" >/dev/null
           done; echo "ports 22 and 8000 now open to $me only" ;;
-  *) echo "usage: $0 status|start|stop|ssh build|coolify [cmd]|put <local> <remote>|myip|tunnel [mattermost]"; exit 2 ;;
+  *) echo "usage: $0 status|start|stop|ssh build|coolify [cmd]|put <local> <remote>|myip|tunnel [mattermost] [switch]"; exit 2 ;;
 esac
