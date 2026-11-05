@@ -168,7 +168,8 @@ class RoomSync:
                     log.warning("room sync: could not add agents to %s: %s %s", label, status, str(body)[:200])
                     continue
             else:
-                body = {"name": it["name"], "description": WHAT[it["kind"]], "agent_names": agent_names, "bridge_id": it["bridge"], "group_id": it["group"]}
+                body = {"name": it["name"], "description": WHAT[it["kind"]], "agent_names": agent_names, "bridge_id": it["bridge"], "group_id": it["group"],
+                        "channel_type": "channel_public"}                    # Switch refuses a new chat-app channel without one
                 status, room = gw.call("POST", "/rooms", {k: v for k, v in body.items() if v is not None})
                 if status not in (200, 201) or not isinstance(room, dict) or "id" not in room:
                     problems.append(f"{label}: Switch answered {status} {str(room)[:100]}")

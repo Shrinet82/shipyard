@@ -39,6 +39,8 @@ class World:
         if method == "POST" and path == "/rooms":
             if self.fail:
                 return 403, "no"
+            if body.get("channel_type") not in ("channel_public", "channel_private"):          # what the real Switch answers
+                return 400, {"detail": "Creating a new bridge channel requires channel_type ('channel_public', 'channel_private', ...)"}
             self.n += 1
             room = {"id": f"new-{self.n}", "name": body["name"], "bridge_id": body["bridge_id"], "bridge_type": "x", "group_id": body.get("group_id")}
             self.rooms.append(room)
@@ -83,7 +85,7 @@ def test_apply_creates_the_room_through_switch_listens_in_it_and_remembers_it(sy
     assert out["rooms"] == ["#demo-incidents (ShipYard)"] and not out["problems"]
     post = next(c[2] for c in sync.world.calls if c[:2] == ("POST", "/rooms"))
     assert post == {"name": "demo-incidents", "description": "Alerts with real log evidence, and the Ops Agent's diagnosis.", "agent_names": ["ops-agent", "gatekeeper"],
-                    "bridge_id": DISCORD, "group_id": "g-d"}
+                    "bridge_id": DISCORD, "group_id": "g-d", "channel_type": "channel_public"}
     p = sync.cfg.projects["demo"]
     assert "new-1" in p.incident_rooms and sync.cfg.project_for_room("new-1").name == "demo" and p.room_names["new-1"] == "#demo-incidents (ShipYard)"
     assert json.loads(sync.rooms_file.read_text()) == {"demo": {"incidents": {"new-1": "#demo-incidents (ShipYard)"}}}
