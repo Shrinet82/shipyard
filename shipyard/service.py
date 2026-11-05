@@ -1088,7 +1088,7 @@ class Service:
         for room in sorted(project.ops_rooms):
             self.post(room, pointer)
         if self.flow is not None:
-            self.flow.on_alert(project, app, kind, payload, lines, sorted(project.alert_rooms), sorted(project.incident_rooms), incident=inc["key"] if inc else None)
+            self.flow.on_alert(project, app, kind, payload, lines, [*sorted(project.incident_rooms), *sorted(project.ops_rooms)], sorted(project.incident_rooms), incident=inc["key"] if inc else None)
 
     # -- housekeeping ---------------------------------------------------------
 
