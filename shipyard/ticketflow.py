@@ -122,7 +122,7 @@ class TicketFlow:
         lines.append("Links: " + (", ".join(links[:6]) if links else "none") + (" · labels: " + ", ".join(g["labels"]) if g["labels"] else "")
                      + (f" · auto ({g['source']})" if g["automatic"] else ""))
         for e in g["events"][:3]:
-            lines.append(f"- {e['created_at'][5:16].replace('T', ' ')} {_clip(e['actor_name'], 20)}: {e['type'].replace('_', ' ')}" + (f" {_clip(e['from'] or 'none', 18)} → {_clip(e['to'], 30)}" if e["to"] else ""))
+            lines.append(f"- {e['created_at'][5:16].replace('T', ' ')} {_clip(e['actor_name'], 20)}: {e['type'].replace('_', ' ')}" + (f" {_clip(e['from'] or 'none', 18)} → {_clip(e['to'], 30)}" if e["to"] and e["type"] != "created" else ""))
         return "\n".join(lines) + self._link(g["key"])
 
     # -- notifications (to people other than the one who acted) ------------------------------------------------------
