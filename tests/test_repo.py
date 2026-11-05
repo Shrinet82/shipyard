@@ -70,6 +70,32 @@ class FakeGitHub:
         self._guard()
         return self.issues.get(login, [])
 
+    # CI listing: workflows, runs, check runs and artifacts, as GitHub's API returns them
+    flows: list = []
+    runs: list = []
+    check_rows: list = []
+    artifacts: dict = {}
+
+    def workflows(self, repo):
+        self._guard()
+        return self.flows
+
+    def recent_runs(self, repo, limit=30):
+        self._guard()
+        return self.runs
+
+    def check_runs(self, repo, sha):
+        self._guard()
+        return self.check_rows
+
+    def workflow_runs(self, repo, sha):
+        self._guard()
+        return self.runs
+
+    def run_artifacts(self, repo, run_id):
+        self._guard()
+        return self.artifacts.get(run_id, [])
+
     def merge(self, repo, n, sha, method="squash"):
         self._guard()
         if self.prs[n].head_sha != sha:
@@ -107,6 +133,7 @@ def env(tmp_path):
           repo.merge: dangerous
           repo.pr_list: read
           repo.pr_status: read
+          repo.ci: read
           repo.digest: read
           audit.read: read
         github: {{stale_hours: 48}}
@@ -492,3 +519,73 @@ def test_missing_installation_is_an_error_not_a_guess():
     app = GitHubApp("1", "k", http=Http(), sign=lambda m: b"s")
     with pytest.raises(GitHubError):
         app.checks("o/r", "s", ())
+
+
+# --- the CI listing --------------------------------------------------------------
+
+def _ci_fixture(gh):
+    gh.flows = [{"id": 1, "name": "CI", "path": ".github/workflows/ci.yml", "state": "active"},
+                {"id": 2, "name": "Nightly e2e", "path": ".github/workflows/e2e.yml", "state": "active"},
+                {"id": 3, "name": "Lint", "path": ".github/workflows/lint.yml", "state": "disabled_manually"}]
+    gh.runs = [{"id": 10, "workflow_id": 1, "name": "CI", "path": ".github/workflows/ci.yml", "event": "pull_request", "head_branch": "footer",
+                "conclusion": "success", "status": "completed", "html_url": "https://github.com/o/r/actions/runs/10", "triggering_actor": {"login": "anya"}},
+               {"id": 11, "workflow_id": 2, "name": "Nightly e2e", "path": ".github/workflows/e2e.yml", "event": "schedule", "head_branch": "main",
+                "conclusion": "failure", "status": "completed", "html_url": "https://github.com/o/r/actions/runs/11", "actor": {"login": "github-actions[bot]"}}]
+    gh.check_rows = [{"name": "test", "status": "completed", "conclusion": "success"}, {"name": "sbom", "status": "completed", "conclusion": "success"},
+                     {"name": "e2e", "status": "in_progress", "conclusion": None}]
+    gh.artifacts = {10: [{"name": "sbom-spdx", "size_in_bytes": 2_500_000}, {"name": "grype-report", "size_in_bytes": 90_000}],
+                    11: [{"name": "playwright-trace", "size_in_bytes": 4096, "expired": True}]}
+
+
+def test_ci_with_no_argument_lists_every_workflow_and_what_shipyard_does_with_it(env):
+    _ci_fixture(env.gh)
+    env.say(VIEWER, "ci")
+    out = env.last()
+    assert "3 workflow(s)" in out
+    assert "CI [.github/workflows/ci.yml, active]: latest run: success on footer (pull_request, by anya)" in out and "feeds the SBOM gate" in out
+    assert "Nightly e2e" in out and "failure on main (schedule, by github-actions[bot])" in out and "not read for the SBOM gate" in out
+    assert "Lint [.github/workflows/lint.yml, disabled_manually]: no runs yet" in out
+    assert "Merge checks count only: test." in out
+
+
+def test_ci_for_a_pull_request_shows_checks_runs_artifacts_and_what_the_gate_reads(env):
+    _ci_fixture(env.gh)
+    env.gh.set(pr(6, "Bump the footer"))
+    env.say(VIEWER, "ci 6")
+    out = env.last()
+    assert "CI for PR #6" in out and "3 check(s), 2 workflow run(s)" in out
+    assert "check test: success (required for merge)" in out
+    assert "check e2e: in_progress (not required, so merge ignores it)" in out
+    assert "started by anya" in out and "sbom-spdx (2.4 MB), grype-report (87 KB)" in out and "its SBOM is read by the gate" in out
+    assert "started by github-actions[bot]" in out and "playwright-trace (4 KB, expired)" in out
+
+
+def test_ci_says_when_a_required_check_never_reported_and_when_sbom_artifacts_are_missing(env):
+    _ci_fixture(env.gh)
+    env.gh.check_rows = [{"name": "sbom", "status": "completed", "conclusion": "success"}]
+    env.gh.artifacts[10] = []
+    env.gh.set(pr(6))
+    env.say(VIEWER, "ci 6")
+    out = env.last()
+    assert "check test: missing (required for merge" in out
+    assert "the gate expects artifacts sbom-spdx and grype-report here and they are missing" in out
+
+
+def test_ci_by_commit_for_an_agent_and_for_a_stranger(env):
+    _ci_fixture(env.gh)
+    env.say(VIEWER, "ci " + "a" * 7)
+    assert "commit aaaaaaa" in env.last()
+    env.say(VIEWER, "ci banana")
+    assert env.last().startswith("Usage:")
+    env.svc.handle_event({"type": "message", "room_id": OPS, "payload": {"message_id": "q2", "sender": VIEWER, "sender_name": "vw",
+                                                                       "sender_kind": None, "body": "which pipelines run?", "addressed": False}})
+    out = env.svc.propose(action="repo.ci", target="workflows", args={}, message_id="q2", agent="repo-agent")
+    assert out["status"] == "done" and "3 workflow(s)" in out["result"]
+    env.say("@switch-mattermost-16c735be-bdc7-470d-8af9-a53d5d73403f-nobody:localhost", "ci")
+    assert env.last().startswith("Denied") and "not a member" in env.last()
+
+
+def test_ci_reports_github_down(env):
+    env.gh.down = True
+    env.say(VIEWER, "ci")
+    assert "Could not reach GitHub" in env.last()

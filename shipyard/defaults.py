@@ -4,7 +4,7 @@ from __future__ import annotations
 ACTIONS = {
     "coolify.status": "read", "coolify.logs": "read", "coolify.history": "read",
     "k8s.status": "read", "k8s.logs": "read", "k8s.events": "read",
-    "repo.pr_list": "read", "repo.pr_status": "read", "repo.digest": "read", "repo.suggestions": "read", "audit.read": "read", "sbom.read": "read",
+    "repo.pr_list": "read", "repo.pr_status": "read", "repo.ci": "read", "repo.digest": "read", "repo.suggestions": "read", "audit.read": "read", "sbom.read": "read",
     "coolify.deploy": "change", "coolify.restart": "change", "coolify.rollback": "change",
     "coolify.exec": "change", "k8s.exec": "change",         # allowlisted read-only diagnostics inside a container or pod
     "k8s.restart": "change", "k8s.rollback": "change", "k8s.scale": "change",

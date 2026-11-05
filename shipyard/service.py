@@ -23,6 +23,7 @@ from .hostshell import ShellError
 from .kube import KubeError
 from .incidents import IncidentError, parse_items
 from .policy import Role, Verdict, evaluate
+from . import cireport
 from .sbom import _t, gate_reasons, rebase, summary as sbom_summary
 from . import suggestions as sg
 from .shellrules import Refused, check_container, check_host
@@ -42,6 +43,7 @@ ACTION_FOR_VERB = {
     "merge": "repo.merge",
     "prs": "repo.pr_list",
     "pr": "repo.pr_status",
+    "ci": "repo.ci",
     "digest": "repo.digest",
     "status": "coolify.status",
     "deploy": "coolify.deploy",
@@ -163,7 +165,7 @@ class Service:
             return self._audit(project, sender, cmd)
         if cmd.verb == "status":
             return self._status(project, room, sender, cmd)
-        if cmd.verb in ("prs", "pr", "digest"):
+        if cmd.verb in ("prs", "pr", "ci", "digest"):
             return self._repo_read(project, room, sender, cmd)
         if cmd.verb == "sbom":
             return self._sbom(project, room, sender, cmd)
@@ -335,6 +337,17 @@ class Service:
         flags = [f"CI {c.ci}"] + (["conflict"] if pr.mergeable is False else []) + (["draft"] if pr.draft else [])
         return f"#{pr.number} {pr.title} by {pr.author} ({', '.join(flags)}) {pr.url}"
 
+    def _ci_text(self, project: Project, target: str) -> str:
+        repo, t = project.repo, target.lower()
+        if t in ("workflows", "all", project.name.lower()):
+            return cireport.repo_overview(self.github, repo.name, repo.required_checks, self.cfg.sbom.workflow)
+        if t.isdigit():
+            pr = self.github.pr(repo.name, int(t))
+            return cireport.commit_report(self.github, repo.name, pr.head_sha, f"PR #{pr.number}", repo.required_checks, self.cfg.sbom.workflow)
+        if re.fullmatch(r"[0-9a-f]{7,40}", t):
+            return cireport.commit_report(self.github, repo.name, t, f"commit {t[:7]}", repo.required_checks, self.cfg.sbom.workflow)
+        return f"Usage: {USAGE['ci']}"
+
     def _repo_read(self, project: Project, room: str, sender: str, cmd: Command) -> str:
         action = ACTION_FOR_VERB[cmd.verb]
         target = cmd.args[0] if cmd.args else project.name
@@ -354,6 +367,8 @@ class Service:
                 if not target.isdigit():
                     return f"Usage: {USAGE['pr']}"
                 return self._pr_line(project, self.github.pr(project.repo.name, int(target)))
+            if cmd.verb == "ci":
+                return self._ci_text(project, cmd.args[0] if cmd.args else "workflows")
             login = project.github_logins.get(sender)
             if not login:
                 return "No GitHub login is configured for you in this project."
@@ -929,7 +944,7 @@ class Service:
         args = dict(args or {})
         args.pop("gate", None)             # only the Gatekeeper decides what is gated
         who = f"agent:{agent}"
-        read_repo = action in ("repo.pr_list", "repo.pr_status")
+        read_repo = action in ("repo.pr_list", "repo.pr_status", "repo.ci")
         is_exec = action in ("k8s.exec", "coolify.exec")
         if not (action.startswith("coolify.") or read_repo or is_exec):
             return {"status": "denied", "reason": "unsupported action"}
@@ -969,7 +984,7 @@ class Service:
             requester, room = m["sender"], m["room"]
         name = self._name(requester)
         if read_repo:                      # reads need no approval; the person's own role still applies
-            cmd = Command("prs", ()) if action == "repo.pr_list" else Command("pr", (target,))
+            cmd = Command("prs", ()) if action == "repo.pr_list" else Command("ci", (target,)) if action == "repo.ci" else Command("pr", (target,))
             text = self._repo_read(project, room, requester, cmd)
             return {"status": "denied" if text.startswith("Denied") else "done", "result": text}
         backend = project.backend_of(target)

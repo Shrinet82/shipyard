@@ -213,6 +213,16 @@ class GitHubApp:
         data = self._call("GET", f"/repos/{repo}/actions/runs?head_sha={sha}&per_page=20")
         return data.get("workflow_runs", [])
 
+    def workflows(self, repo: str) -> list[dict[str, Any]]:
+        return self._call("GET", f"/repos/{repo}/actions/workflows?per_page=50").get("workflows", [])
+
+    def recent_runs(self, repo: str, limit: int = 30) -> list[dict[str, Any]]:
+        return self._call("GET", f"/repos/{repo}/actions/runs?per_page={int(limit)}").get("workflow_runs", [])
+
+    def check_runs(self, repo: str, sha: str) -> list[dict[str, Any]]:
+        """Every check run on a commit, as GitHub reports them (`checks` keeps only the pass/fail verdict)."""
+        return self._call("GET", f"/repos/{repo}/commits/{sha}/check-runs?per_page=100").get("check_runs", [])
+
     def run_artifacts(self, repo: str, run_id: int) -> list[dict[str, Any]]:
         return self._call("GET", f"/repos/{repo}/actions/runs/{int(run_id)}/artifacts?per_page=50").get("artifacts", [])
 
