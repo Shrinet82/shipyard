@@ -159,3 +159,11 @@ def test_the_webhook_route_needs_the_secret_in_the_path():
         assert post("/hooks/signoz/wrong", {"alerts": []}) == 404 and len(got) == 1 and not other
     finally:
         srv.shutdown()
+
+
+def test_a_signoz_alert_titles_its_ticket_with_the_rule_name_and_is_audited_as_signoz(env):
+    env.svc.signoz = FakeSigNoz()
+    from shipyard.ticketflow import TicketFlow
+    env.svc.on_signoz_alert({"status": "firing", "alerts": [{**ALERT, "status": "firing"}]})
+    rows = env.gk.audit.recent("demo", 30)
+    assert any(r["action"] == "signoz_alert" and r["actor"] == "signoz" for r in rows)

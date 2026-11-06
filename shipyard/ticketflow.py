@@ -303,6 +303,8 @@ class TicketFlow:
                                      labels=["deploy"], assignee=assignee, room=rooms[0] if rooms else "", again="the deploy failed again")
         else:
             what, label = self.ALERT_KINDS.get(event, (event.replace("_", " "), "ops"))
+            if event.startswith("signoz_") and payload.get("alert"):
+                what = f"SigNoz alert {str(payload['alert'])[:80]}"
             t, outcome = self.t.auto(project.name, source="alert", source_ref=f"alert:{app}:{event}", title=f"Investigate: {what} on {app}",
                                      body="Waiting for the Ops Agent's diagnosis.", priority="high", labels=[label], assignee=project.on_call, room=rooms[0] if rooms else "")
         if outcome == "limited":

@@ -1171,7 +1171,7 @@ class Service:
                 f"{fenced(lines)}{incident_line}\n"
                 f"@{agent} diagnose this in three lines and give options (for example roll back, restart or redeploy). "
                 f"You cannot change anything; people decide, e.g. `@gatekeeper rollback {app}`.")
-        self.gk.audit.write(project=project.name, actor="coolify" if audit_action and audit_action != kind else "cluster", event="alert",
+        self.gk.audit.write(project=project.name, actor="signoz" if audit_action == "signoz_alert" else "coolify" if audit_action and audit_action != kind else "cluster", event="alert",
                             action=audit_action or kind, target=app, **audit_detail)
         payload = payload or {}
         if not project.incident_rooms:
