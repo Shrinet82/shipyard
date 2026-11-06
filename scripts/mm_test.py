@@ -9,10 +9,23 @@ import os
 import secrets
 import sys
 import time
+import urllib.error
 import urllib.request
 
 env = dict(l.strip().split("=", 1) for l in open(os.path.expanduser("~/switch/.env")) if "=" in l and not l.startswith("#"))
 USERS = os.path.expanduser("~/mm-test-users.json")
+
+
+def project_name():
+    """The first project in ~/shipyard.yaml (its rooms are `<project>-ops` and so on); `demo` when there is no config yet."""
+    try:
+        import yaml
+        return next(iter((yaml.safe_load(open(os.path.expanduser("~/shipyard.yaml"))) or {}).get("projects", {"demo": 1})))
+    except (OSError, ImportError, StopIteration, ValueError):
+        return "demo"
+
+
+PROJECT = os.environ.get("SY_PROJECT") or project_name()
 BASE = "http://localhost:8065/api/v4"
 
 
@@ -37,7 +50,14 @@ def channel_id(tok, name):
 def create():
     admin = login(env["MATTERMOST_ADMIN_USER"], env["MATTERMOST_ADMIN_PASSWORD"])
     team = mm("GET", f"/teams/name/{env['MATTERMOST_TEAM_NAME']}", tok=admin)[0]["id"]
-    chans = [channel_id(admin, c) for c in ("demo-ops", "demo-maintainers")]
+    chans = []
+    for c in (f"{PROJECT}-ops", f"{PROJECT}-maintainers", f"{PROJECT}-incidents"):
+        try:
+            chans.append(channel_id(admin, c))
+        except urllib.error.HTTPError:
+            print(f"(no room {c} yet: skipped)")
+    if not chans:
+        sys.exit(f"no rooms called {PROJECT}-ops or {PROJECT}-maintainers in Mattermost; run the Shipyard installer first")
     users = json.load(open(USERS)) if os.path.exists(USERS) else {}
     for name in ("owner", "maint", "deployer", "viewer", "guest"):
         uname = f"sy-{name}"
@@ -55,10 +75,10 @@ def create():
         json.dump(users, f)
 
 
-def say(user, text, channel="demo-ops", wait=float(os.environ.get("WAIT", 25))):
+def say(user, text, channel=None, wait=float(os.environ.get("WAIT", 25))):
     users = json.load(open(USERS))
     tok = login(user, users[user])
-    ch = channel_id(tok, channel)
+    ch = channel_id(tok, channel or f"{PROJECT}-ops")
     me = mm("GET", "/users/me", tok=tok)[0]["id"]
     before = mm("GET", f"/channels/{ch}/posts?per_page=1", tok=tok)[0]
     mine = mm("POST", "/posts", {"channel_id": ch, "message": text}, tok)[0]["create_at"]
