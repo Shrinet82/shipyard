@@ -122,3 +122,11 @@ def test_an_install_without_coolify_starts_and_every_coolify_call_says_so(tmp_pa
         client.status("uuid")
     with pytest.raises(CoolifyError):
         client.container_logs("uuid")
+
+
+def test_discord_bridges_are_read_from_the_config(tmp_path):
+    from shipyard.config import load_config
+    f = tmp_path / "c.yaml"
+    f.write_text("projects:\n  demo:\n    rooms: {ops: [r1], maintainers: [r2]}\n    apps: {}\n    members: {}\nactions: {coolify.status: read}\ndiscord: {token_file: ~/discord.env, bridges: {b1: '123'}}\n")
+    cfg = load_config(f)
+    assert cfg.discord_bridges == {"b1": "123"} and cfg.discord_token_file == "~/discord.env"

@@ -294,7 +294,10 @@ def _connect_discord(args: argparse.Namespace) -> None:
         return input(f"{question}" + (f" [{default}]" if default else "") + ": ").strip() or default
     try:
         out = DiscordSetup(Path(expand(args.config)).parent, gateway, ask=ask, secret=getpass.getpass).run(f"{project} Discord")
-        edit_config(args.config, lambda raw: raw.update({"discord": {**(raw.get("discord") or {}), "token_file": out["token_file"]}}))
+        def remember(raw: dict) -> None:
+            d = raw.get("discord") or {}
+            raw["discord"] = {**d, "token_file": out["token_file"], "bridges": {**(d.get("bridges") or {}), out["bridge_id"]: out["guild_id"]}}
+        edit_config(args.config, remember)
     except (DiscordSetupError, ConfigEditError, KeyboardInterrupt) as exc:
         raise SystemExit(str(exc) or "stopped") from None
     subprocess.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"], check=False)

@@ -317,3 +317,22 @@ def test_discord_api_is_read_only_and_never_shows_the_token():
         Discord("sekret").channels("../../x")
     with pytest.raises(DiscordError):
         Discord("")
+
+
+def test_a_discord_app_added_on_purpose_gets_the_projects_rooms_even_with_no_room_or_member_on_it_yet(env, tmp_path):  # noqa: F811
+    w = World()
+    w.rooms = [r for r in w.rooms if r.get("bridge_id") != DISCORD]               # Discord was just connected: Switch has no room on it
+    project = env.cfg.projects["demo"]
+    before = RoomSync(env.cfg, tmp_path / "r1.json", env.gk.audit, lambda: w, None, None, FakeDiscord(w))
+    assert before.plan(project) == []                                              # the bug: nobody has a role there, so the app was not considered
+    cfg = dataclasses.replace(env.cfg, discord_bridges={DISCORD: "77777"})
+    rs = RoomSync(cfg, tmp_path / "r2.json", env.gk.audit, lambda: w, None, lambda project, actor: None, FakeDiscord(w))
+    plan = rs.plan(project)
+    assert [(i["kind"], i["op"], i["name"], i["app"]) for i in plan] == [("ops", "create", "demo-ops", "ShipYard"), ("maintainers", "create", "demo-maintainers", "ShipYard"),
+                                                                        ("incidents", "create", "demo-incidents", "ShipYard")]
+    out = rs.apply(project, OWNER)
+    assert out["rooms"] == ["#demo-ops (ShipYard)", "#demo-maintainers (ShipYard)", "#demo-incidents (ShipYard)"] and not out["problems"]
+    assert rs.plan(cfg.projects["demo"]) == []                                     # and a second run has nothing to do
+    unknown = dataclasses.replace(env.cfg, discord_bridges={"not-a-bridge": "1"})
+    assert RoomSync(unknown, tmp_path / "r3.json", env.gk.audit, lambda: w, None, None, None).plan(project) == []
+    assert cfg.discord_bridges[DISCORD] == "77777" and RoomSync(cfg, tmp_path / "r4.json", None, lambda: w, None, None, FakeDiscord(w))._guild_of_bridge({"rooms": []}, DISCORD) == "77777"

@@ -133,7 +133,7 @@ class RoomSync:
         for r in world["rooms"]:
             if r.get("bridge_id") == bridge and (c := self._chan(r)):
                 return c[0]
-        return None
+        return self.cfg.discord_bridges.get(bridge)
 
     def find_channel(self, bridge: str, name: str, world: dict[str, Any] | None = None) -> str | None:
         """The id of a text channel with this name that no Switch room is linked to yet (so it can be linked, not duplicated)."""
@@ -193,6 +193,9 @@ class RoomSync:
             m = _BRIDGE.match(ident)
             if m and m["bridge"] in world["apps"]:
                 apps.setdefault(m["bridge"], {k: set() for k in KINDS})
+        for bridge in self.cfg.discord_bridges:                             # a chat app the person added on purpose is one the project is used on, even before anyone has a role there
+            if bridge in world["apps"]:
+                apps.setdefault(bridge, {k: set() for k in KINDS})
         out: list[dict[str, Any]] = []
         for bridge, have in sorted(apps.items()):
             group = next((by_id[i].get("group_id") for ids in have.values() for i in ids if i in by_id and by_id[i].get("group_id")), None)
