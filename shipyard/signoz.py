@@ -200,6 +200,6 @@ def create_alert(url: str, token: str, webhook_url: str, *, http: Callable[..., 
                           "selectedQueryName": "A", "alertOnAbsent": False, "target": 0, "op": "1", "matchType": "1"},
             "evaluation": {"kind": "rolling", "spec": {"evalWindow": "5m0s", "frequency": "1m0s"}},
             "labels": {"severity": "critical"},
-            "annotations": {"summary": "Errors are being logged by {{$labels.service.name}}", "description": "At least one ERROR log line in the last 5 minutes"},
+            "annotations": {"summary": "A service logged ERROR lines in the last 5 minutes", "description": "At least one ERROR log line; the labels name the service"},
             "preferredChannels": ["shipyard"]}
     _plain(http, "POST", url + "/api/v2/rules", token, rule)
