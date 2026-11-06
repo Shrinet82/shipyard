@@ -43,7 +43,8 @@ spec:
     flavor: compose
     mode: docker
 Y
-foundryctl forge -f casting.yaml >/dev/null
+foundryctl gauge -f casting.yaml >/dev/null 2>&1 || true            # checks the machine; its lock file is what forge builds on
+foundryctl forge -f casting.yaml >/dev/null || { echo "foundryctl forge failed; run it by hand in ~/signoz to see why"; exit 1; }
 ( cd pours/deployment && sudo docker compose up -d >/dev/null 2>&1 )
 printf 'waiting for SigNoz'
 for _ in $(seq 1 90); do curl -fs http://localhost:8080/api/v2/healthz >/dev/null 2>&1 && break; printf '.'; sleep 5; done; echo
