@@ -112,6 +112,7 @@ class DashboardCfg:
     session_hours: float = 8.0
     members_file: str = "~/shipyard-members.json"   # role overlay the dashboard edits
     public_url: str = ""                            # where people open the dashboard (used for links in chat), e.g. http://localhost:8780
+    allow_remote: bool = False                      # listen on a non-loopback bind (only `shipyard expose` sets this): plain HTTP, firewall it to yourself
 
 
 @dataclass(frozen=True)
@@ -306,7 +307,7 @@ def load_config(path: str | Path) -> Config:
                      tuple(str(c) for c in sb.get("copyleft", ["AGPL", "GPL", "SSPL", "EUPL", "OSL", "CC-BY-SA"]))),
         dashboard=DashboardCfg(str(dash.get("bind", "127.0.0.1")), int(dash.get("port", 8780)),
                                float(dash.get("session_hours", 8)), dash.get("members_file", "~/shipyard-members.json"),
-                               str(dash.get("public_url", "")).rstrip("/")),
+                               str(dash.get("public_url", "")).rstrip("/"), bool(dash.get("allow_remote", False))),
         standup_at=_hhmm((raw.get("tickets") or {}).get("standup_at", "")),
         hosts=hosts,
         kube=kube,

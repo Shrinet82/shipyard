@@ -99,7 +99,7 @@ def _start_dashboard(cfg, gk, auth, collector, members, service, coolify, kube, 
     access = AgentAccess(cfg, gateway, db, gk.lock, gk.audit) if gateway else None
     dash = Dashboard(cfg, gk, auth, collector.store if collector else None, health, members, access, service._name, flow=service.flow, roomsync=service.roomsync)
     threading.Thread(target=health.loop, args=(stop,), daemon=True).start()
-    serve_dashboard(dash, cfg.dashboard.bind, cfg.dashboard.port)
+    serve_dashboard(dash, cfg.dashboard.bind, cfg.dashboard.port, cfg.dashboard.allow_remote, cfg.dashboard.public_url)
 
 
 def run(config_path: str) -> None:

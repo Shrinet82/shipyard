@@ -59,7 +59,7 @@ def test_enable_writes_the_override_the_unit_the_dashboard_bind_and_restarts_in_
                     "systemctl --user restart shipyard-gatekeeper"]
     assert "WorkingDirectory=" in m.calls[0][1]
     d = yaml.safe_load(m.config.read_text())["dashboard"]
-    assert d["bind"] == "0.0.0.0" and d["public_url"] == "http://13.126.17.66:8780" and d["port"] == 8780
+    assert d["bind"] == "0.0.0.0" and d["allow_remote"] is True and d["public_url"] == "http://13.126.17.66:8780" and d["port"] == 8780
     text = "\n".join(said)
     assert "TCP 8065, 8000, 8780" in text and "YOUR address only" in text and "tunnel still works" in text
 
@@ -82,7 +82,7 @@ def test_off_puts_everything_back_to_this_machine_only(tmp_path):
     ex.disable(m.config)
     assert doc((tmp_path / "switch" / OVERRIDE).read_text()) == {"services": {}}
     d = yaml.safe_load(m.config.read_text())["dashboard"]
-    assert d["bind"] == "127.0.0.1" and "public_url" not in d
+    assert d["bind"] == "127.0.0.1" and "public_url" not in d and "allow_remote" not in d
 
 
 def test_failures_are_reported_and_a_missing_switch_is_refused(tmp_path):

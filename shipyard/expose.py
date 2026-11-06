@@ -123,10 +123,11 @@ class Exposer:
             def change(raw: dict[str, Any]) -> None:
                 d = dict(raw.get("dashboard") or {})
                 if "dashboard" in parts:
-                    d.update({"bind": "0.0.0.0", "public_url": f"http://{host}:{PORTS['dashboard']}"})
+                    d.update({"bind": "0.0.0.0", "allow_remote": True, "public_url": f"http://{host}:{PORTS['dashboard']}"})
                 else:
                     d["bind"] = "127.0.0.1"
                     d.pop("public_url", None)
+                    d.pop("allow_remote", None)
                 raw["dashboard"] = d
             edit_config(config, change)
             self.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"])

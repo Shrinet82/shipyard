@@ -436,3 +436,20 @@ def test_switch_rooms_page_shows_only_the_projects_rooms_and_safe_links(env):
     assert by["demo-ops"]["url"] == "https://discord.com/channels/1/2" and by["demo-maintainers"]["url"] is None       # a javascript: link is dropped
     assert by["demo-maintainers"]["kind"] == "maintainers" and "someone-elses" not in json.dumps(d)
     assert env.call("GET", "/api/rooms", who_=None)[0] == 401
+
+
+def test_a_network_bind_needs_the_explicit_opt_in_and_then_only_the_published_host_is_accepted(env):
+    import socket
+    from shipyard.dashboard import _loopback_host
+    with pytest.raises(SystemExit, match="shipyard expose"):
+        serve(env.dash, "0.0.0.0", 0)                                           # the default stays: loopback only
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = serve(env.dash, "0.0.0.0", port, allow_remote=True, public_url="http://13.126.17.66:8780")
+    srv.shutdown()
+    srv.server_close()
+    ok = _loopback_host(8780, "http://13.126.17.66:8780")
+    assert ok("localhost:8780") and ok("127.0.0.1:8780") and ok("13.126.17.66:8780") and ok("13.126.17.66:8780".upper())
+    assert not ok("evil.example:8780") and not ok("13.126.17.66:9999") and not ok("13.126.17.67:8780")
+    assert not _loopback_host(8780, "")("13.126.17.66:8780")                       # nothing published: loopback only, as before

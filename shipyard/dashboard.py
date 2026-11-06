@@ -503,15 +503,18 @@ class Dashboard:
 _LOCAL_HOST = re.compile(r"^(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?$")
 
 
-def _loopback_host(port: int) -> Callable[[str], bool]:
-    """Only a loopback Host header: a web page on another domain that rebinds its name to 127.0.0.1 carries its own."""
-    return lambda host: bool(_LOCAL_HOST.match(host))
+def _loopback_host(port: int, public_url: str = "") -> Callable[[str], bool]:
+    """Only a loopback Host header, plus the one address the owner chose to publish (`public_url`): a web page on another domain that rebinds its name
+    to this machine carries its own Host, which matches neither."""
+    extra = urlparse(public_url).netloc.lower() if public_url else ""
+    return lambda host: bool(_LOCAL_HOST.match(host)) or (bool(extra) and host.lower() == extra)
 
 
-def serve(dash: Dashboard, bind: str, port: int) -> ThreadingHTTPServer:
-    if bind not in ("127.0.0.1", "localhost", "::1"):
-        raise SystemExit("dashboard.bind must be a loopback address: reach it through an SSH tunnel, never the open internet")
-    host_ok = _loopback_host(port)
+def serve(dash: Dashboard, bind: str, port: int, allow_remote: bool = False, public_url: str = "") -> ThreadingHTTPServer:
+    if bind not in ("127.0.0.1", "localhost", "::1") and not allow_remote:
+        raise SystemExit("dashboard.bind must be a loopback address: reach it through an SSH tunnel. To listen on the network address on purpose "
+                         "(plain HTTP: allow the port for your own address only in the firewall) run `python3 -m shipyard expose`, or set dashboard.allow_remote: true")
+    host_ok = _loopback_host(port, public_url if allow_remote else "")
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "Shipyard"
@@ -549,5 +552,5 @@ def serve(dash: Dashboard, bind: str, port: int) -> ThreadingHTTPServer:
     srv = ThreadingHTTPServer((bind, port), Handler)
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    log.info("dashboard on http://%s:%d (loopback only)", bind, port)
+    log.info("dashboard on http://%s:%d (%s)", bind, port, "loopback only" if bind in ("127.0.0.1", "localhost", "::1") else "reachable on the network: plain HTTP, keep the port closed to everyone but you")
     return srv
