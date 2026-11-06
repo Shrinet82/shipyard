@@ -51,7 +51,7 @@ The merge exchange ran on a build VM against a real repository and a real Grype 
 
 | Area | Commands (mention `@gatekeeper`) | Who |
 |---|---|---|
-| Read | `status`, `logs`, `events`, `prs`, `pr <n>`, `ci [pr|commit]`, `digest`, `suggestions <pr>`, `sbom [pr\|commit\|release-tag\|app\|live]`, `audit [n]`, `whoami` | viewer and up |
+| Read | `status`, `logs`, `events`, `prs`, `pr <n>`, `ci [pr|commit]`, `signals [rules|logs <svc>|errors <svc>]`, `digest`, `suggestions <pr>`, `sbom [pr\|commit\|release-tag\|app\|live]`, `audit [n]`, `whoami` | viewer and up |
 | Change | `deploy`, `restart`, `rollback` (approval), `scale` (Kubernetes) | deployer and up |
 | Diagnose | `exec <app> <command>`: one of about 50 read-only commands inside the app's Coolify container or Kubernetes pod (`ls`, `cat`, `tail`, `grep`, `ps`, `df`, `curl http://localhost:PORT/health`, a runtime's `--version`, ...). No shell, no writes, no deletes, no environment, no credential files. | maintainer and up |
 | Dangerous | `merge <pr>`, `apply-suggestion <pr> <n\|all>` (a reviewer's suggested change, committed to the PR branch), `shell <host> <cmd>` (owner) | maintainer / owner, plus a second person's approval |
@@ -66,47 +66,46 @@ Commands are mentions, never a `!` prefix, because Switch uses `!` for its own c
 
 ## Install
 
-You need a machine that already runs **Switch** (with its admin login in `~/switch/.env`). A brand-new Switch has no rooms, so `init` creates them for you. Coolify, a GitHub App and a Kubernetes cluster are optional; Shipyard asks about each and skips what you leave blank.
-
-**On a blank Ubuntu 24.04 machine, in this order** (this exact order was run from scratch on two new AWS VMs, a `t3.xlarge` for Shipyard and a `t3.medium` for Coolify):
-
-1. **Switch and Mattermost**: `scripts/install-switch.sh` (Docker, pinned Switch 0.31.0, the bundled Mattermost, agent management turned on).
-2. **The agents' controller** (only if you want the Ops and Repo agents): `scripts/install-controller.sh` installs Node 22, the Codex CLI and Switch's agent controller and runs it as an unprivileged user, `agentrun`. Then, once, as a person: `sudo -u agentrun -H codex login --device-auth`, and `sudo systemctl restart switch-agents` so Switch sees Codex as ready. Do this **before** `init`, or the template cannot create the agents.
-3. **Coolify** (optional), on its own machine: `curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash`. Create the root account **within 10 minutes** of it starting; if the page says the setup window is closed, run `docker restart coolify` on that machine and reload. Then, in Settings, enable **API access** and **MCP**, and create an API token with **read, read:sensitive, write and deploy** (without `read:sensitive` Coolify refuses to return an app's logs, so alerts carry no log lines).
-4. **Shipyard**: the command below. Put the Coolify token in the `COOLIFY_TOKEN` environment variable.
+One command on a blank Ubuntu 24.04 machine (4 vCPU and 16 GB is comfortable; 4 GB is the minimum):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shrinet82/shipyard/main/scripts/install.sh | bash
 ```
 
-That installs Python, PyYAML, OpenSSL and git with apt, clones this repository to `~/shipyard` and runs `python3 -m shipyard init`, which:
+It installs Python and git, clones this repository to `~/shipyard`, and starts the **guided installer** (`python3 -m shipyard install`). It looks at what is really on the machine, does what a machine can do, and stops only for what a person has to do. Each stop says where to go and what to get, takes the value hidden, checks it at once and carries on. Run it again after any failure: it continues from where things stand.
 
-1. logs in to Switch and **lists your rooms**, so you pick them by number;
-2. asks for your Coolify URL and token (typed hidden), **lists your applications** and lets you choose;
-3. checks the GitHub App can see your repository **before** writing anything;
-4. writes `~/shipyard.yaml` and the secret files (all mode `0600`), registers the Gatekeeper in Switch and adds it to the rooms;
-5. runs the Shipyard **Switch template**: the project's three rooms and the links between them, and the Ops and Repo agents (reused if Switch has them, otherwise created on your controller, which needs Codex installed and signed in); the agents get **only** the Gatekeeper's tool;
-6. installs and starts a systemd user service, then runs `doctor` and prints what is left to do.
+| Step | What happens by itself | What you do |
+|---|---|---|
+| Check the machine | disk, memory, sudo | nothing |
+| Where does Shipyard deploy? | | pick Coolify, Kubernetes, both, or neither |
+| Switch and Mattermost | installs Docker, Switch 0.31.0 and Mattermost; Switch comes back after a reboot | nothing |
+| The agents | installs Node, the Codex CLI and the controller, run as an unprivileged user | open one link and type the code Codex shows |
+| Shipyard | lists your rooms to pick; registers the Gatekeeper; writes the config; starts it | the **Coolify token** (it names the page to create it and checks it at once) |
+| GitHub | **creates the GitHub App from a manifest**: you press *Create GitHub App*, then *Install* on your repository. The keys are saved for you | two clicks |
+| Connectors | **Kubernetes**: `connect kubernetes` lists your namespaces and deployments, creates least-privilege accounts and kubeconfigs, and proves each credential. **SigNoz**: `connect signoz` | pick a namespace; paste a read-only SigNoz key |
+| You | waits for you to type `@gatekeeper whoami` in any room, asks "is this you?", and makes you the owner | type one message |
 
-After it finishes:
+Unattended: `python3 -m shipyard install --answers answers.yaml` asks nothing (see [`docs/answers.example.yaml`](docs/answers.example.yaml)); `--dry-run` checks every credential and prints the config without writing a file.
+
+Each connector also works on its own, after the install:
 
 ```bash
-# 1. in a Shipyard room, type:  @gatekeeper whoami   and copy the id it prints
-python3 -m shipyard add-owner --identity '<that id>'      # once, on the machine
-# 2. in Coolify: Notifications → Webhook → the URL that this prints
-python3 -m shipyard webhook-url --host <this machine's private address>
-# 3. any time, to see what is wrong:
-python3 -m shipyard doctor
+python3 -m shipyard github-app --repo owner/name        # the two-click GitHub App (--org for an organisation)
+python3 -m shipyard connect kubernetes                  # pick a namespace; --dry-run shows what it would create
+python3 -m shipyard connect signoz --url http://signoz:8080
+python3 -m shipyard doctor                              # what is wrong, if anything
 ```
 
-Everything can also run without questions: `python3 -m shipyard init --answers answers.yaml` (see [`docs/answers.example.yaml`](docs/answers.example.yaml)), and `--dry-run` checks every credential and prints the config without writing a file.
+What each connector does, what it needs and how to remove it: [`docs/CONNECTORS.md`](docs/CONNECTORS.md).
+
+**Coolify** is installed on its own machine (the guided installer asks for its address and token, it does not install it): `curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash`. Create the root account **within 10 minutes**; if the page says the setup window is closed, run `docker restart coolify` on that machine and reload. In Settings enable **API access** and **MCP**, then create an API token with *read, read:sensitive, write and deploy*. After it finishes, in Coolify: Notifications → Webhook → the URL that `python3 -m shipyard webhook-url --host <this machine's private address>` prints.
 
 **Getting the pieces** (each is a one-time job; the steps that worked are in [`docs/PHASE0-FINDINGS.md`](docs/PHASE0-FINDINGS.md) and [`docs/PHASE2.md`](docs/PHASE2.md)):
 
 - *Switch*: run the server in Docker, enable `agent_management`, connect Discord or use the bundled Mattermost, and enroll a controller if you want the agents.
-- *GitHub App*: webhooks **off**; repository permissions Contents (read and write), Pull requests (read and write), Actions (read), Checks (read), Commit statuses (read), Issues (read). Install it on the one repository.
+- *GitHub App by hand* (the installer does this for you, see above): webhooks **off**; repository permissions Contents (read and write), Pull requests (read and write), Actions (read), Checks (read), Commit statuses (read), Issues (read). Install it on the one repository.
 - *CI*: [`docs/CI.md`](docs/CI.md) explains which pipelines Shipyard reads and how to add one (`required_checks`, the SBOM workflow, and `@gatekeeper ci` to list what ran). Add the `sbom` job from [`shipyard-demo`'s workflow](https://github.com/Shrinet82/shipyard-demo/blob/main/.github/workflows/ci.yml) (Syft and Grype, actions pinned by commit). Mark `test` and `sbom` as required checks.
-- *Kubernetes (optional)*: `scripts/install-k8s-demo.sh` installs kubectl and a k3d cluster, applies the demo workload (`demo-k8s`, in namespace `demo`) and the RBAC from `deploy/k8s/`, and writes three least-privilege kubeconfigs (`viewer`, `deployer`, `ops`) under `~/kube/`. It prints the block to add to `shipyard.yaml`: a `kubernetes:` section with those files, and under the project's `apps:` an entry `demo-k8s: {backend: k8s, namespace: demo, deployment: demo-k8s}`. Restart the Gatekeeper afterwards. For your own cluster, use `scripts/k8s_kubeconfigs.sh` with your namespace.
+- *Kubernetes (optional)*: `python3 -m shipyard connect kubernetes` (see above). `scripts/install-k8s-demo.sh` is only for a throwaway k3d cluster with a demo workload.
 - *Production shell (optional)*: lets `exec` run allowlisted diagnostics inside a Coolify container. On the machine that runs Shipyard, make a key: `ssh-keygen -t ed25519 -N '' -f ~/.ssh/shipyard-ops`. On the Coolify machine run `sudo bash deploy/ops-shell/install.sh "$(cat shipyard-ops.pub)" <Shipyard machine's private address>` (it adds the forced-command key, the root helper and a sudoers rule). Then in `shipyard.yaml` add `hosts: {prod: {ssh: shipyard-ops@<Coolify private address>, key_file: ~/.ssh/shipyard-ops}}` and, on the project, `exec_host: prod`. The allowlist is enforced three times (Gatekeeper, SSH wrapper, root helper).
 - *First deploy and the SBOM gate*: the first release of an app has no baseline, so every critical vulnerability counts as new and the deploy is blocked. An owner overrides it once (`@gatekeeper approve <id>`); that release becomes the baseline, and later releases are compared with it. A maintainer cannot override.
 - *Reboots*: `install-switch.sh` adds a `switch-stack` systemd unit (the compose file has no restart policy), `install-controller.sh` a `switch-agents` unit, and `init` enables lingering for the Gatekeeper's user service; after a reboot everything comes back by itself. Coolify's containers restart on their own.

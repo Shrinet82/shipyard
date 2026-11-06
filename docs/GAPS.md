@@ -65,3 +65,13 @@ published. Submission on WeMakeDevs for Track 2 and Track 1 is not done. Target:
 The room sync reads a server's real channel list only for Discord (`discord.token_file`, read only). On Mattermost and Slack a channel deleted in the chat app leaves
 its Switch room behind and the sync cannot tell; Switch itself does not notice. Deleting a room through Switch leaves the chat channel unless the delete carries
 `retire_channel=true`; the sync's own removals only touch rooms whose channel is already gone.
+
+## The guided installer, the connectors (Nov 6)
+
+Tested live on the trial VMs and in unit tests: the GitHub App setup page (renders, refuses a wrong state; the real "Create GitHub App" click is the
+one step only a person can do), `connect kubernetes` on a k3d cluster (two namespaces, every credential proved, chat commands afterwards), `connect signoz`
+against a real SigNoz 0.149 (logs, errors, redaction, SigNoz's own "test channel" notification opening an alert, a ticket and a diagnosis), the guided
+installer on an already-installed machine (it detects everything and skips), and the owner claim by `whoami` (unit tests plus the audit row live).
+
+**Not tested:** the installer end to end on a **blank** machine (every step is individually tested; the order was run by hand before), `connect kubernetes`
+on a managed cluster (EKS, GKE), a real SigNoz alert rule firing (only SigNoz's test notification), and the GitHub App creation click.

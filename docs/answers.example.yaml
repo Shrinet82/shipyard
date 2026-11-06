@@ -16,6 +16,7 @@ github:
   private_key_file: ~/shipyard-github.pem
   repo: owner/repo                   # required when app_id is set
   deploy_app: demo-web               # deployed after a merge; one of the Coolify apps
+  create: "no"                        # interactive installs offer to create the App with two clicks; "no" skips the offer
 owner: ""                            # the id `@gatekeeper whoami` prints; or add it afterwards with `add-owner`
 dashboard: true
 agents:
