@@ -82,3 +82,15 @@ Needs: an owner already set (type `@gatekeeper whoami` in Mattermost first, or r
 ## A Mattermost login
 
 The bundled Mattermost starts with only the admin account Switch uses. `python3 -m shipyard mattermost-user <name>` makes an ordinary user, adds them to the team and the project's rooms and shows the password once. The installer offers it before it waits for your first `@gatekeeper whoami`. The browser pages listen on the machine itself; see the tunnel line in the README.
+
+## Browser pages without a tunnel (`expose`)
+
+```bash
+python3 -m shipyard expose            # Mattermost :8065, Switch Console :8000 and the dashboard :8780 on the machine's address
+python3 -m shipyard expose --only mattermost
+python3 -m shipyard expose --off      # this machine only again
+```
+
+What it changes: a docker compose override (`~/switch/shipyard-expose.yml`) that replaces the loopback-only port mapping of just Mattermost and Switch (Postgres and the Switch gateway stay on the machine), a restart of the Switch stack (about a minute), and in `shipyard.yaml` `dashboard.bind: 0.0.0.0`, `dashboard.allow_remote: true` and `dashboard.public_url`. The dashboard then accepts only `localhost` and the published address as its Host, and still refuses a non-loopback bind unless `allow_remote` is set. Mattermost's live connection is allowed from both `localhost:8065` and the public address, so the tunnel keeps working (a different origin is refused; checked with a websocket handshake).
+
+What it cannot do is open your cloud firewall. Allow TCP 8065, 8000 and 8780 **from your own address only** (AWS: EC2 → Security groups → Inbound rules → Add rule → Custom TCP → Source: My IP). The pages use plain HTTP, so passwords and sessions are readable by anyone on the path: never open them to everyone, and prefer the tunnel on a machine without a cloud firewall. The address is found from the AWS metadata (or an outside lookup); pass `--host` otherwise.

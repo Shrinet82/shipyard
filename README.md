@@ -89,7 +89,7 @@ It installs Python and git, clones this repository to `~/shipyard`, and starts t
 
 Unattended: `python3 -m shipyard install --answers answers.yaml` asks nothing (see [`docs/answers.example.yaml`](docs/answers.example.yaml)); `--dry-run` checks every credential and prints the config without writing a file.
 
-The browser pages of the bundled Mattermost (8065), Switch Console (8000) and the Shipyard dashboard (8780) listen on the machine itself, by design. From your own computer reach them with an SSH tunnel: `ssh -L 8065:localhost:8065 -L 8780:localhost:8780 <the machine>`, then open `http://localhost:8065`.
+The browser pages of the bundled Mattermost (8065), Switch Console (8000) and the Shipyard dashboard (8780) listen on the machine itself by default. At the owner step the installer offers to **make them reachable from your browser without a tunnel** (`python3 -m shipyard expose`; the default answer is yes on a cloud machine such as AWS, whose firewall blocks everything until you allow it, and no elsewhere). It listens on the machine's address for those three pages only (never the database) and then tells you to allow TCP 8065, 8000 and 8780 **for your own address only** in the cloud firewall, because the pages use plain HTTP. `python3 -m shipyard expose --off` takes it back. The tunnel always keeps working too: `ssh -L 8065:localhost:8065 -L 8780:localhost:8780 <the machine>`, then open `http://localhost:8065`.
 
 Each connector also works on its own, after the install:
 
@@ -98,6 +98,7 @@ python3 -m shipyard github-app --repo owner/name        # the two-click GitHub A
 python3 -m shipyard connect kubernetes                  # pick a namespace; --dry-run shows what it would create
 python3 -m shipyard connect signoz --url http://signoz:8080
 python3 -m shipyard connect discord                     # bot token, switches, invite, bridge, rooms
+python3 -m shipyard expose                              # browser pages without a tunnel (--off to undo, --only mattermost to choose)
 python3 -m shipyard mattermost-user anya                # a login in the bundled Mattermost (password shown once)
 python3 -m shipyard doctor                              # what is wrong, if anything
 ```
