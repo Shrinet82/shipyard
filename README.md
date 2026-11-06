@@ -65,29 +65,56 @@ The full model, what is tested and the risks that remain: [`docs/SECURITY.md`](d
 
 ## See it working
 
-Real runs, shortened but never invented.
+A real run: a four-person team on a three-pod Kubernetes cluster, with real pull requests, real CI and a real SigNoz. Nothing here is mocked up. The chat is Mattermost; the same commands work in Discord.
 
-```text
-maintainer @gatekeeper merge 7
-gatekeeper BLOCKED by the SBOM gate (id ab516adc): merge PR #7, requested by maintainer. 6 new critical CVEs:
-           CVE-2019-14234 in pypi/django 2.2 … Only an owner can override: `@gatekeeper approve ab516adc`.
-maintainer @gatekeeper approve ab516adc
-gatekeeper Denied: only an owner can override a security block.
-owner      @gatekeeper approve ab516adc
-gatekeeper Done: merged PR #7 (squash, ded6a31), approved by owner. Deploy of demo-web queued.
-```
+### Four roles, one rulebook
 
-An alert from SigNoz on a three-pod Kubernetes cluster, the Ops Agent's diagnosis, and the evidence on request:
+Anya is the owner, Rahul a maintainer, Meera a deployer and Dev a viewer. The Gatekeeper decides from the role, not from who sounds sure.
 
-![A SigNoz alert in Mattermost: ticket, diagnosis and the error logs](docs/img/screenshots/alert-in-mattermost.png)
-
-More screenshots (placeholders until the recordings are made):
-
-| The dashboard | Shipyard in Discord |
+| Roles decide what you can do | Approvals need a second person |
 |---|---|
-| ![The dashboard](docs/img/placeholders/dashboard.svg) | ![Shipyard in a Discord server](docs/img/placeholders/discord.svg) |
-| **SigNoz connected** | **The guided installer** |
-| ![SigNoz connected](docs/img/placeholders/signoz.svg) | ![The guided installer](docs/img/placeholders/installer.svg) |
+| ![Dev's restart is denied, Meera scales, Meera's exec is denied, Rahul's exec runs](docs/img/screenshots/chat-roles-denials.png) | ![Rahul asks to merge, Rahul and Meera can't approve, Anya does, and the App merges](docs/img/screenshots/chat-approval-merge.png) |
+| A viewer can't restart, a deployer can scale but not `exec`, a maintainer can `exec`. | The maintainer asks to merge. He and the deployer can't approve it. The owner does, and it merges. |
+
+### A pull request, end to end
+
+| The merge is done by the GitHub App | CI, SBOM and tickets, in the maintainers room |
+|---|---|
+| ![Pull request 1 merged by the shipyard GitHub App after approval](docs/img/screenshots/github-pr-merged-by-app.png) | ![CI passed, SY-2 done, SBOM reports for every pull request](docs/img/screenshots/chat-pr-events.png) |
+| "Fixes SY-2" linked it; after the owner's approval the App merged it (3 checks passed). | The ticket closed itself when the pull request merged, and every pull request got an SBOM report. |
+
+### The security gate
+
+| Blocked in chat | Visible on the dashboard |
+|---|---|
+| ![SBOM for PR 3: 2 new critical CVEs, deploy blocked, owner override required](docs/img/screenshots/chat-sbom-blocked.png) | ![SBOM reports: pull request 3 is blocked with 2 critical CVEs](docs/img/screenshots/dashboard-sbom.png) |
+| A pull request that adds a vulnerable dependency is blocked, with the CVE ids. | Every run is a row: counts, decision, whether it is deployed. |
+
+### The board and the briefing
+
+| Tickets that follow the code | A briefing for one person |
+|---|---|
+| ![Board with SY-4 to do, SY-1 an automatic alert, SY-3 in review, SY-2 done](docs/img/screenshots/dashboard-board.png) | ![Meera's briefing: her ticket, what changed, what is waiting on her](docs/img/screenshots/chat-briefing.png) |
+| SY-2 is done because its pull request merged; SY-1 opened itself from an alert. | Meera's own desk room: her tickets, what changed since last time, the first step. |
+
+### An alert from SigNoz
+
+| The alert, the evidence and the diagnosis | The logs behind it |
+|---|---|
+| ![Incident INC-1 with evidence and the Ops Agent's three-line diagnosis](docs/img/screenshots/chat-alert-incident.png) | ![SigNoz logs of the namaste pods, errors in red](docs/img/screenshots/signoz-logs.png) |
+| The rule fired, an incident and a ticket opened, and the Ops Agent diagnosed with the real log lines. | The pods ship their logs to SigNoz; the rule counts ERROR lines per service. |
+
+### The dashboard
+
+| Overview | Audit log | Roles |
+|---|---|---|
+| ![Overview](docs/img/screenshots/dashboard-overview.png) | ![Audit log, hash chain verified](docs/img/screenshots/dashboard-audit.png) | ![Roles](docs/img/screenshots/dashboard-roles.png) |
+
+### Still to come
+
+| Shipyard in a Discord server | The guided installer |
+|---|---|
+| ![Shipyard in a Discord server](docs/img/placeholders/discord.svg) | ![The guided installer](docs/img/placeholders/installer.svg) |
 
 ## Demo video
 
