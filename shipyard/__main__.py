@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -22,7 +23,7 @@ from . import webhook
 from .config import Config, expand, load_config
 from .access import AgentAccess, Gateway, read_env
 from .clusterwatch import ClusterWatcher
-from .coolify import CoolifyMcp
+from .coolify import CoolifyMcp, NoCoolify
 from .desks import Desks
 from .discordapi import Discord, token_from
 from .roomsync import RoomSync
@@ -55,6 +56,13 @@ def _read_env_token(path: str, name: str) -> str:
         if line.startswith(name + "="):
             return line.split("=", 1)[1].strip().strip("'\"")
     raise SystemExit(f"{name} not found in {path}")
+
+
+def _coolify_for(cfg: Config) -> Any:
+    """The Coolify client, or a stand-in that refuses when the install has none (Kubernetes only, or chat and repo only)."""
+    if not cfg.coolify_url:
+        return NoCoolify()
+    return CoolifyMcp(cfg.coolify_url, _read_env_token(cfg.coolify_token_file, "COOLIFY_TOKEN"))
 
 
 def _webhook_secret(cfg: Config) -> str:
@@ -101,7 +109,7 @@ def run(config_path: str) -> None:
     db = sqlite3.connect(expand(cfg.db_path), check_same_thread=False)
     gk = Gatekeeper(cfg.policy, db)
     switch = SwitchClient(cfg.switch_url, creds["id"], creds["api_key"])
-    coolify = CoolifyMcp(cfg.coolify_url, _read_env_token(cfg.coolify_token_file, "COOLIFY_TOKEN"))
+    coolify = _coolify_for(cfg)
 
     github = None
     key = expand(cfg.github.private_key_file)

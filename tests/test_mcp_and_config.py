@@ -107,3 +107,18 @@ def test_a_room_cannot_belong_to_two_projects(tmp_path):
 def test_parse(body, addressed, verb):
     cmd = parse(body, addressed)
     assert (cmd.verb if cmd else None) == verb
+
+
+def test_an_install_without_coolify_starts_and_every_coolify_call_says_so(tmp_path):
+    import pytest
+    from shipyard.__main__ import _coolify_for
+    from shipyard.config import load_config
+    from shipyard.coolify import CoolifyError, NoCoolify
+    f = tmp_path / "c.yaml"
+    f.write_text("projects:\n  demo:\n    rooms: {ops: [r1], maintainers: [r2]}\n    apps: {}\n    members: {}\nactions:\n  coolify.status: read\ncoolify: {url: '', token_file: '/nonexistent/coolify.env'}\n")
+    client = _coolify_for(load_config(f))
+    assert isinstance(client, NoCoolify)
+    with pytest.raises(CoolifyError, match="not connected"):
+        client.status("uuid")
+    with pytest.raises(CoolifyError):
+        client.container_logs("uuid")

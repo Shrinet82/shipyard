@@ -17,6 +17,15 @@ class CoolifyError(Exception):
     pass
 
 
+class NoCoolify:
+    """Stands in when the project has no Coolify: any call says so instead of the Gatekeeper failing to start."""
+
+    def __getattr__(self, name: str):
+        def refuse(*args: Any, **kw: Any) -> Any:
+            raise CoolifyError("Coolify is not connected to this install")
+        return refuse
+
+
 class CoolifyMcp:
     def __init__(self, base_url: str, token: str, timeout: float = 30.0):
         self.base = base_url.rstrip("/")
