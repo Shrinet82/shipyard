@@ -238,6 +238,12 @@ def _add_owner(args) -> None:
     print(f"{args.identity} is now an owner of {project}. The Gatekeeper was restarted.")
 
 
+def _private_address() -> str:
+    """This machine's first private address, as a container or another host on the same network reaches it."""
+    out = subprocess.run(["hostname", "-I"], capture_output=True, text=True).stdout.split()
+    return next((a for a in out if "." in a and not a.startswith("127.")), "127.0.0.1")
+
+
 def _connect(args: argparse.Namespace) -> None:
     if args.what == "kubernetes":
         _connect_kubernetes(args)
@@ -250,8 +256,22 @@ def _connect_signoz(args: argparse.Namespace) -> None:
     from .confedit import ConfigEditError, edit_config, project_of
     from .signoz import SigNozError
     url = (args.url or input("SigNoz address (for example http://localhost:8080): ")).strip()
-    print("Create a read-only key: SigNoz → Settings → Service Accounts → New, role Viewer, then add a key. Paste it below (hidden).")
-    key = (os.environ.get("SIGNOZ_API_KEY") or getpass.getpass("SigNoz API key: ")).strip()
+    key, boot = "", None
+    if args.bootstrap:
+        from .signoz import bootstrap
+        try:
+            boot = bootstrap(url)
+        except SigNozError as exc:
+            raise SystemExit(str(exc)) from None
+        key = boot["key"]
+        admin_file = Path(expand(args.config)).parent / "signoz-admin.env"
+        fd = os.open(admin_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"SIGNOZ_ADMIN_EMAIL={boot['admin_email']}\nSIGNOZ_ADMIN_PASSWORD={boot['admin_password']}\n")
+        print(f"  created SigNoz's admin account and a read-only key. The admin login is in {admin_file} (mode 0600).")
+    else:
+        print("Create a read-only key: SigNoz → Settings → Service Accounts → New, role Viewer, then add a key. Paste it below (hidden).")
+        key = (os.environ.get("SIGNOZ_API_KEY") or getpass.getpass("SigNoz API key: ")).strip()
     try:
         print("  " + SigNoz(url, key).check())
         smap = dict(p.split("=", 1) for p in args.service_map.split(",") if "=" in p)
@@ -269,6 +289,14 @@ def _connect_signoz(args: argparse.Namespace) -> None:
         raise SystemExit(str(exc)) from None
     subprocess.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"], check=False)
     secret = _webhook_secret(load_config(args.config))
+    if boot:
+        from .signoz import create_alert
+        host = args.host or _private_address()
+        try:
+            create_alert(url, boot["token"], f"http://{host}:{load_config(args.config).alerts.port}/hooks/signoz/{secret}")
+            print(f"  created SigNoz's alert channel 'shipyard' (calls {host}) and the rule 'Errors in your apps': any service that logs an ERROR opens an incident here.")
+        except SigNozError as exc:
+            print(f"  the alert could not be created ({exc}); create the channel by hand as below")
     print("Connected (read only). In chat: `@gatekeeper signals`, `signals logs <service>`, `signals errors <service>`.\n"
           "To make SigNoz alerts open incidents here: SigNoz → Settings → Notification channels → New → Webhook, URL:\n"
           f"  http://{args.host or '<this machine, as SigNoz reaches it>'}:{load_config(args.config).alerts.port}/hooks/signoz/{secret}\n"
@@ -347,6 +375,7 @@ def main() -> None:
     cs.add_argument("--url", default="", help="SigNoz address, for example http://localhost:8080")
     cs.add_argument("--project", default=None)
     cs.add_argument("--host", default="", help="this machine's address as SigNoz reaches it, to print the alert webhook URL")
+    cs.add_argument("--bootstrap", action="store_true", help="for a brand-new SigNoz: create its admin, a Viewer key and an alert that calls Shipyard (no key to paste)")
     cs.add_argument("--service-map", default="", help="SigNoz service names that differ from your apps: name=app,name=app")
     ga = sub.add_parser("github-app", help="create the GitHub App with two clicks (no form, no key to copy) and add it to the config")
     ga.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))

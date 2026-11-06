@@ -167,3 +167,66 @@ def test_a_signoz_alert_titles_its_ticket_with_the_rule_name_and_is_audited_as_s
     env.svc.on_signoz_alert({"status": "firing", "alerts": [{**ALERT, "status": "firing"}]})
     rows = env.gk.audit.recent("demo", 30)
     assert any(r["action"] == "signoz_alert" and r["actor"] == "signoz" for r in rows)
+
+
+# --- a brand-new SigNoz -----------------------------------------------------------------------------------
+
+class FreshSigNoz:
+    def __init__(self, set_up=False, fail_on=""):
+        self.calls, self.set_up, self.fail_on = [], set_up, fail_on
+
+    def __call__(self, method, url, headers=None, body=None, timeout=20.0):
+        path = url.split("sz:8080")[-1]
+        self.calls.append((method, path, dict(headers or {}), body))
+        if self.fail_on and self.fail_on in path:
+            return 500, {"status": "error", "error": {"message": "internal boom"}}
+        routes = {
+            ("GET", "/api/v1/version"): {"version": "v0.149.0", "setupCompleted": self.set_up},
+            ("POST", "/api/v1/register"): {"status": "success", "data": {"id": "u1"}},
+            ("POST", "/api/v2/sessions/email_password"): {"data": {"accessToken": "tok-1"}},
+            ("POST", "/api/v1/service_accounts"): {"data": {"id": "sa-1"}},
+            ("GET", "/api/v1/roles"): {"data": [{"id": "r-admin", "name": "signoz-admin"}, {"id": "r-viewer", "name": "signoz-viewer"}]},
+            ("POST", "/api/v1/service_account_roles"): {"data": {"id": "x"}},
+            ("POST", "/api/v1/service_accounts/sa-1/keys"): {"data": {"id": "k1", "key": "the-viewer-key"}},
+            ("POST", "/api/v1/channels"): {"data": {"id": "c1"}},
+            ("POST", "/api/v2/rules"): {"data": {"id": "rule1"}},
+        }
+        if path.startswith("/api/v2/sessions/context"):
+            return 200, {"data": {"orgs": [{"id": "org-1"}]}}
+        return (201, routes[(method, path)]) if (method, path) in routes else (404, {})
+
+
+def test_bootstrap_makes_the_admin_a_viewer_key_and_returns_the_login():
+    h = FreshSigNoz()
+    out = __import__("shipyard.signoz", fromlist=["bootstrap"]).bootstrap("http://sz:8080/", http=h, now=lambda: 1_000_000.0, make_password=lambda: "pw-123")
+    assert out == {"admin_email": "admin@shipyard.local", "admin_password": "pw-123", "token": "tok-1", "key": "the-viewer-key"}
+    register = next(c for c in h.calls if c[1] == "/api/v1/register")[3]
+    assert register["password"] == "pw-123" and register["email"] == "admin@shipyard.local"
+    assign = next(c for c in h.calls if c[1] == "/api/v1/service_account_roles")[3]
+    assert assign == {"roleId": "r-viewer", "serviceAccountId": "sa-1"}                          # the Viewer role, never the admin one
+    key_call = next(c for c in h.calls if c[1].endswith("/keys"))
+    assert key_call[3]["expiresAt"] == 1_000_000 + 365 * 86400 and key_call[2]["Authorization"] == "Bearer tok-1"
+    context = next(c for c in h.calls if c[1].startswith("/api/v2/sessions/context"))[1]
+    assert "email=admin%40shipyard.local" in context and "ref=http%3A%2F%2Fsz%3A8080" in context
+
+
+def test_bootstrap_refuses_a_signoz_that_already_has_an_admin_and_reports_failures():
+    from shipyard.signoz import bootstrap
+    h = FreshSigNoz(set_up=True)
+    with pytest.raises(SigNozError, match="already has an admin"):
+        bootstrap("http://sz:8080", http=h)
+    assert [c[1] for c in h.calls] == ["/api/v1/version"]                                         # nothing was created
+    with pytest.raises(SigNozError, match="internal boom"):
+        bootstrap("http://sz:8080", http=FreshSigNoz(fail_on="service_accounts"))
+
+
+def test_create_alert_makes_the_channel_that_calls_shipyard_and_a_rule_that_uses_it():
+    from shipyard.signoz import create_alert
+    h = FreshSigNoz()
+    create_alert("http://sz:8080", "tok-1", "http://10.0.0.5:8766/hooks/signoz/SECRET", http=h)
+    channel = next(c for c in h.calls if c[1] == "/api/v1/channels")[3]
+    assert channel["webhook_configs"][0]["url"] == "http://10.0.0.5:8766/hooks/signoz/SECRET" and channel["name"] == "shipyard"
+    rule = next(c for c in h.calls if c[1] == "/api/v2/rules")[3]
+    spec = rule["condition"]["compositeQuery"]["queries"][0]["spec"]
+    assert rule["preferredChannels"] == ["shipyard"] and spec["signal"] == "logs" and "ERROR" in spec["filter"]["expression"]
+    assert spec["groupBy"][0]["name"] == "service.name" and rule["condition"]["target"] == 0

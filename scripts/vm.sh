@@ -33,10 +33,26 @@ case "${1:-status}" in
           for what in "$@"; do case "$what" in
             mattermost) want "Mattermost" 8065 ;;
             switch)     want "Switch Console" 8000 ;;
-            *) echo "unknown tunnel target: $what (use mattermost and/or switch)"; exit 2 ;; esac; done
+            signoz)     want "SigNoz" 8080 ;;
+            github)     want "GitHub App setup page (open it only while \`shipyard github-app\` runs)" 8767 ;;
+            *) echo "unknown tunnel target: $what (use mattermost, switch, signoz and/or github)"; exit 2 ;; esac; done
           [ ${#fwd[@]} -gt 0 ] || { echo "nothing new to forward"; exit 0; }
           echo "(Ctrl-C closes the tunnel)"
           exec ssh -N -i "$KEY" -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes "${fwd[@]}" ubuntu@"$host" ;;
+  create) # ONE blank Ubuntu 24.04 machine (SY_ENV names it, SY_TYPE sets the size). SSH is open to your current address only; nothing else is public.
+          ami=$(aws ssm get-parameter --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id --query Parameter.Value --output text 2>/dev/null || echo ami-0fc5120b2d80d4749)
+          vpc=$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
+          sg=$(aws ec2 create-security-group --group-name "$SG_NAME" --description "$ENVNAME: SSH from one address" --vpc-id "$vpc" --query GroupId --output text)
+          aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr "$(curl -s https://checkip.amazonaws.com)/32" >/dev/null
+          id=$(aws ec2 run-instances --image-id "$ami" --instance-type "${SY_TYPE:-t3.xlarge}" --key-name shipyard-dev --security-group-ids "$sg" --associate-public-ip-address \
+                 --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=80,VolumeType=gp3,DeleteOnTermination=true}' \
+                 --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${ENVNAME}-build},{Key=Project,Value=$ENVNAME}]" "ResourceType=volume,Tags=[{Key=Project,Value=$ENVNAME}]" \
+                 --query 'Instances[0].InstanceId' --output text)
+          aws ec2 wait instance-running --instance-ids "$id"; status ;;
+  destroy) # terminate this environment's machine(s) and delete its security group (the disks go with the machine)
+          i=$(ids); [ -z "$i" ] || { aws ec2 terminate-instances --instance-ids $i >/dev/null; aws ec2 wait instance-terminated --instance-ids $i; }
+          sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$SG_NAME --query 'SecurityGroups[0].GroupId' --output text)
+          [ "$sg" = None ] || aws ec2 delete-security-group --group-id "$sg"; echo "$ENVNAME deleted" ;;
   myip)   sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$SG_NAME --query 'SecurityGroups[0].GroupId' --output text)
           me=$(curl -s https://checkip.amazonaws.com)/32
           for port in 22 8000; do
@@ -44,5 +60,5 @@ case "${1:-status}" in
             for c in $old; do aws ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr "$c" >/dev/null; done
             aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr "$me" >/dev/null
           done; echo "ports 22 and 8000 now open to $me only" ;;
-  *) echo "usage: $0 status|start|stop|ssh build|coolify [cmd]|put <local> <remote>|myip|tunnel [mattermost] [switch]"; exit 2 ;;
+  *) echo "usage: $0 status|start|stop|ssh build|coolify [cmd]|put <local> <remote>|myip|create|destroy|tunnel [mattermost] [switch] [signoz] [github]"; exit 2 ;;
 esac

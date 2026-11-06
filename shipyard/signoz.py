@@ -149,3 +149,57 @@ def parse_webhook(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:40] or "alert"
+
+
+# -- a fresh SigNoz: make the admin, a read-only key and (optionally) an alert that calls Shipyard ---------------------------------
+
+def _plain(http: Callable[..., tuple[int, Any]], method: str, url: str, token: str = "", body: Any = None) -> Any:
+    status, data = http(method, url, {"Authorization": f"Bearer {token}"} if token else {}, body)
+    if status >= 400 or not isinstance(data, dict):
+        msg = (((data or {}).get("error") or {}).get("message") if isinstance(data, dict) else "") or ""
+        raise SigNozError(f"SigNoz answered {status} for {url.split('/api')[-1][:40]}: {msg}"[:220])
+    return data
+
+
+def bootstrap(url: str, *, http: Callable[..., tuple[int, Any]] = _http, now: Callable[[], float] = time.time,
+              make_password: Callable[[], str] | None = None) -> dict[str, str]:
+    """For a SigNoz nobody has set up yet: create the admin account, then a Viewer service account with a one-year key.
+    Returns the admin's login, a session token (for `create_alert`) and the read-only key."""
+    import secrets
+    url = url.rstrip("/")
+    info = _plain(http, "GET", url + "/api/v1/version")
+    if info.get("setupCompleted"):
+        raise SigNozError("this SigNoz already has an admin. Create a Viewer service account and key in its settings, then run connect signoz without --bootstrap")
+    password = (make_password or (lambda: secrets.token_urlsafe(18) + "Aa1!"))()
+    email = "admin@shipyard.local"
+    _plain(http, "POST", url + "/api/v1/register", body={"name": "shipyard", "orgName": "shipyard", "email": email, "password": password})
+    from urllib.parse import quote
+    ctx = _plain(http, "GET", f"{url}/api/v2/sessions/context?email={quote(email)}&ref={quote(url, safe='')}")
+    org = ctx["data"]["orgs"][0]["id"]
+    token = _plain(http, "POST", url + "/api/v2/sessions/email_password", body={"email": email, "password": password, "orgId": org})["data"]["accessToken"]
+    sa = _plain(http, "POST", url + "/api/v1/service_accounts", token, {"name": "shipyard-readonly"})["data"]["id"]
+    roles = _plain(http, "GET", url + "/api/v1/roles", token)["data"]
+    viewer = next((r["id"] for r in roles if "viewer" in str(r.get("name", "")).lower()), None)
+    if not viewer:
+        raise SigNozError("SigNoz has no Viewer role")
+    _plain(http, "POST", url + "/api/v1/service_account_roles", token, {"roleId": viewer, "serviceAccountId": sa})
+    key = _plain(http, "POST", f"{url}/api/v1/service_accounts/{sa}/keys", token, {"name": "shipyard", "expiresAt": int(now() + 365 * 86400)})["data"]["key"]
+    return {"admin_email": email, "admin_password": password, "token": token, "key": key}
+
+
+def create_alert(url: str, token: str, webhook_url: str, *, http: Callable[..., tuple[int, Any]] = _http, name: str = "Errors in your apps") -> None:
+    """A webhook channel that calls Shipyard, and a rule: any service logging ERROR in 5 minutes fires it (checked every minute)."""
+    url = url.rstrip("/")
+    _plain(http, "POST", url + "/api/v1/channels", token, {"name": "shipyard", "webhook_configs": [{"url": webhook_url, "send_resolved": True}]})
+    rule = {"alert": name, "alertType": "LOGS_BASED_ALERT", "ruleType": "threshold_rule", "version": "v5",
+            "condition": {"compositeQuery": {"queryType": "builder", "panelType": "graph", "unit": "",
+                          "queries": [{"type": "builder_query", "spec": {
+                              "name": "A", "signal": "logs", "stepInterval": 60, "disabled": False, "aggregations": [{"expression": "count()"}],
+                              "filter": {"expression": "severity_text = 'ERROR'"},
+                              "groupBy": [{"name": "service.name", "fieldContext": "resource", "fieldDataType": "string"}]}}]},
+                          "selectedQueryName": "A", "alertOnAbsent": False, "target": 0, "op": "1", "matchType": "1"},
+            "evaluation": {"kind": "rolling", "spec": {"evalWindow": "5m0s", "frequency": "1m0s"}},
+            "labels": {"severity": "critical"},
+            "annotations": {"summary": "Errors are being logged by {{$labels.service.name}}", "description": "At least one ERROR log line in the last 5 minutes"},
+            "preferredChannels": ["shipyard"]}
+    _plain(http, "POST", url + "/api/v2/rules", token, rule)
