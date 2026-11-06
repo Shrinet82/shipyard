@@ -9,7 +9,7 @@ step() { printf '\n== %s\n' "$*"; }
 
 step "1/5 Docker, kubectl, k3d"
 sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io git curl python3-yaml openssl >/dev/null
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2 git curl python3-yaml openssl >/dev/null
 sudo systemctl enable --now docker >/dev/null 2>&1
 sudo usermod -aG docker "$USER"
 command -v kubectl >/dev/null || { curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && sudo install -m 755 /tmp/kubectl /usr/local/bin/kubectl; }
@@ -45,7 +45,7 @@ spec:
 Y
 foundryctl gauge -f casting.yaml >/dev/null 2>&1 || true            # checks the machine; its lock file is what forge builds on
 foundryctl forge -f casting.yaml >/dev/null || { echo "foundryctl forge failed; run it by hand in ~/signoz to see why"; exit 1; }
-( cd pours/deployment && sudo docker compose up -d >/dev/null 2>&1 )
+( cd pours/deployment && sudo docker compose up -d --quiet-pull 2>&1 | tail -3 )
 printf 'waiting for SigNoz'
 for _ in $(seq 1 90); do curl -fs http://localhost:8080/api/v2/healthz >/dev/null 2>&1 && break; printf '.'; sleep 5; done; echo
 curl -fs http://localhost:8080/api/v2/healthz >/dev/null || { echo "SigNoz did not come up; check: cd ~/signoz/pours/deployment && sudo docker compose ps"; exit 1; }
