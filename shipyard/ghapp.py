@@ -150,7 +150,9 @@ class AppSetup:
         _write_secret(self.key_file, pem if pem.endswith("\n") else pem + "\n")
         if isinstance(data.get("webhook_secret"), str) and data["webhook_secret"]:
             _write_secret(self.webhook_secret_file, data["webhook_secret"])
-        return {"app_id": str(app_id), "slug": str(slug), "key_file": str(self.key_file), "html_url": data.get("html_url", "")}
+        out = {"app_id": str(app_id), "slug": str(slug), "key_file": str(self.key_file), "html_url": data.get("html_url", "")}
+        _write_secret(self.home / "shipyard-github-app.json", json.dumps({k: out[k] for k in ("app_id", "slug", "key_file")}))      # so a re-run can reuse the App
+        return out
 
     def handle(self, path: str) -> tuple[int, str]:
         """(status, html) for a GET. All the logic is here so it can be tested without a socket."""

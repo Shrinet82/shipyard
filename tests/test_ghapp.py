@@ -139,3 +139,11 @@ def test_a_public_host_changes_the_addresses_and_listens_on_all_interfaces_only_
         with pytest.raises(AppSetupError):
             AppSetup(tmp_path, public_host=bad)
     assert public.handle("/callback?code=abcdefgh1234&state=wrong")[0] == 400                 # the state still guards it
+
+
+def test_the_app_is_remembered_so_a_rerun_can_reuse_it(tmp_path):
+    s = AppSetup(tmp_path, http=fake_http())
+    s.handle(f"/callback?code=abcdefgh1234&state={s.state}")
+    saved = json.loads((tmp_path / "shipyard-github-app.json").read_text())
+    assert saved == {"app_id": "4242", "slug": "shipyard-ab12", "key_file": str(tmp_path / "shipyard-github.pem")}
+    assert oct((tmp_path / "shipyard-github-app.json").stat().st_mode & 0o777) == "0o600"

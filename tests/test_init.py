@@ -417,3 +417,28 @@ def test_declining_the_github_app_skips_repo_features(home):
     inst = Installer(a, home, interactive=True, ask=lambda q, d: d, secret=lambda q: "x", say=lambda s: None, gateway=FakeGw, http=http_fake(),
                      run=lambda *x, **k: SimpleNamespace(returncode=0, stdout="", stderr=""), workdir=Path(__file__).parent.parent)
     assert inst.github({"demo-web": "u-web"}) is None
+
+
+def test_a_project_name_switch_would_refuse_is_asked_again_before_anything_is_created(home):
+    said, names = [], iter(["Ship-test-3", "shop-test"])
+    a = answers(home)
+    a.pop("project")
+    inst = Installer(a, home, interactive=True, ask=lambda q, d: next(names) if q.startswith("Project name") else d, secret=lambda q: "x", say=said.append, gateway=FakeGw,
+                     http=http_fake(), workdir=Path(__file__).parent.parent)
+    assert inst.project_name() == "shop-test" and any("lowercase" in s for s in said)
+    with pytest.raises(InitError, match="not valid"):
+        Installer(answers(home, project="Bad Name"), home, interactive=False, say=lambda s: None, gateway=FakeGw, http=http_fake()).project_name()
+    assert Installer(answers(home, project="demo"), home, interactive=False, say=lambda s: None, gateway=FakeGw, http=http_fake()).project_name() == "demo"
+
+
+def test_a_github_app_made_on_an_earlier_run_is_offered_again_instead_of_creating_another(home):
+    (home / "shipyard-github-app.json").write_text(json.dumps({"app_id": "55", "slug": "shipyard-ab12", "key_file": str(home / "gh.pem")}))
+    created = []
+    a = answers(home, github={"app_id": "", "repo": "o/r", "create": "yes", "deploy_app": ""})
+    inst = Installer(a, home, interactive=True, ask=lambda q, d: d, secret=lambda q: "x", say=lambda s: None, gateway=FakeGw, http=http_fake(),
+                     github_check=lambda app, key, repo: "909", app_creator=lambda *x, **k: created.append(1) or {}, workdir=Path(__file__).parent.parent)
+    got = inst.create_github_app()
+    assert got["app_id"] == "55" and got["installation"] == "909" and not created
+    nothing = Installer(a, home, interactive=True, ask=lambda q, d: d, secret=lambda q: "x", say=lambda s: None, gateway=FakeGw, http=http_fake(),
+                        github_check=lambda *x: (_ for _ in ()).throw(RuntimeError("404")), app_creator=lambda *x, **k: created.append(1) or {"app_id": "1"}, workdir=Path(__file__).parent.parent)
+    assert nothing.create_github_app() == {"app_id": "1"} and created                    # not installed on that repository: a new one is made

@@ -10,6 +10,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -243,6 +244,33 @@ class Installer:
         from .ghapp import create_app
         return create_app(home, repo, **kw)
 
+    PROJECT = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
+
+    def project_name(self) -> str:
+        """Asked until it is a name Switch accepts: lowercase letters, digits and dashes, starting with a letter."""
+        for attempt in range(3):
+            name = self.get("project", "Project name (lowercase letters, digits and dashes)", "demo")
+            if self.PROJECT.match(name):
+                return name
+            if not self.interactive or attempt == 2 or self.a.get("project"):
+                raise InitError(f"project name {name!r} is not valid: use 2 to 31 lowercase letters, digits or dashes, starting with a letter (for example `shop-test`)")
+            self.say(f"  {name!r} will not do: lowercase letters, digits and dashes only, starting with a letter (for example `shop-test`).")
+        raise InitError("no valid project name")
+
+    def _earlier_github_app(self, repo: str) -> dict[str, Any]:
+        """An App this tool created on an earlier run (the installer stopped after the clicks): offer it instead of making another."""
+        f = self.home / "shipyard-github-app.json"
+        if not f.exists():
+            return {}
+        try:
+            saved = json.loads(f.read_text())
+            inst = self.github_check(saved["app_id"], saved["key_file"], repo)
+        except Exception:                                        # not installed on this repository, or unreadable: make a new one
+            return {}
+        if self.get("github.reuse", f"Found the GitHub App you created earlier ({saved.get('slug')}), installed on {repo}. Use it? (yes/no)", "yes").lower() not in ("yes", "y"):
+            return {}
+        return {**saved, "installation": inst, "repo": repo}
+
     def create_github_app(self) -> dict[str, Any]:
         """Offer the two-click manifest flow (see ghapp.py). Returns {} when the person skips it or this run cannot ask."""
         if not self.interactive or self.a.get("github", {}).get("create") == "no":
@@ -250,6 +278,8 @@ class Installer:
         if self.get("github.create", "No GitHub App yet. Create it now with two clicks (no form to fill, no key to copy)? (yes/no)", "yes").lower() not in ("yes", "y"):
             return {}
         repo = self.get("github.repo", "Repository the App should work on, owner/name", required=True)
+        if (earlier := self._earlier_github_app(repo)):
+            return earlier
         org = self.get("github.org", "GitHub organisation that owns the App (blank for your own account)", "")
         try:
             host = self.get("github.public_host", "Address your browser uses to reach this machine, for the setup page (blank: localhost, through an SSH tunnel)", "")
@@ -433,7 +463,7 @@ class Installer:
             raise InitError(p)
         self.say("1/5 Switch")
         gw, env, url, env_file = self.switch()
-        project = self.get("project", "Project name", "demo")
+        project = self.project_name()
         rooms = self.rooms(gw, project)
         self.say("2/5 Coolify")
         cool = self.coolify()
