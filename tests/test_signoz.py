@@ -1,5 +1,7 @@
 import json
 import socket
+import threading
+import urllib.error
 import urllib.request
 
 import pytest
@@ -148,7 +150,12 @@ def test_the_webhook_route_needs_the_secret_in_the_path():
                 return urllib.request.urlopen(req, timeout=5).status
             except urllib.error.HTTPError as e:
                 return e.code
-        assert post(f"/hooks/signoz/{secret}", {"alerts": []}) == 200 and got == [{"alerts": []}]
+        assert post(f"/hooks/signoz/{secret}", {"alerts": []}) == 200
+        for _ in range(100):                                      # the handler answers first, then hands the alert over
+            if got:
+                break
+            threading.Event().wait(0.02)
+        assert got == [{"alerts": []}]
         assert post("/hooks/signoz/wrong", {"alerts": []}) == 404 and len(got) == 1 and not other
     finally:
         srv.shutdown()
