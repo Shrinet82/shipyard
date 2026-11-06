@@ -246,15 +246,22 @@ class Installer:
 
     PROJECT = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
 
+    @staticmethod
+    def clean_project_name(typed: str) -> str:
+        """What Switch accepts: lowercase letters, digits and dashes, starting with a letter. Whatever was typed is turned into that."""
+        return re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9]+", "-", typed.strip().lower())).strip("-")[:31].rstrip("-")
+
     def project_name(self) -> str:
-        """Asked until it is a name Switch accepts: lowercase letters, digits and dashes, starting with a letter."""
         for attempt in range(3):
-            name = self.get("project", "Project name (lowercase letters, digits and dashes)", "demo")
+            typed = self.get("project", "Project name", "demo")
+            name = self.clean_project_name(typed)
             if self.PROJECT.match(name):
+                if name != typed:
+                    self.say(f"  using the project name {name!r} (Switch allows lowercase letters, digits and dashes)")
                 return name
             if not self.interactive or attempt == 2 or self.a.get("project"):
-                raise InitError(f"project name {name!r} is not valid: use 2 to 31 lowercase letters, digits or dashes, starting with a letter (for example `shop-test`)")
-            self.say(f"  {name!r} will not do: lowercase letters, digits and dashes only, starting with a letter (for example `shop-test`).")
+                raise InitError(f"{typed!r} cannot be made into a project name: use 2 to 31 letters or digits, starting with a letter (for example `shop-test`)")
+            self.say(f"  {typed!r} will not do: it must start with a letter and have at least 2 characters.")
         raise InitError("no valid project name")
 
     def _earlier_github_app(self, repo: str) -> dict[str, Any]:
@@ -288,7 +295,7 @@ class Installer:
             raise InitError(f"creating the GitHub App failed: {exc}") from None
 
     def github(self, apps: dict[str, str]) -> dict[str, Any] | None:
-        app_id = self.get("github.app_id", "GitHub App id (blank to create one now, or skip repo features)", "")
+        app_id = self.get("github.app_id", "GitHub App id (the number on github.com/settings/apps/<your app>; blank to create one now, or skip repo features)", "")
         created: dict[str, Any] = {}
         if not app_id:
             created = self.create_github_app()
@@ -309,6 +316,11 @@ class Installer:
         deploy = self.get("github.deploy_app", "App to deploy after a merge (blank for none)", next(iter(apps), "") if len(apps) == 1 else "")
         if deploy and deploy not in apps:
             raise InitError(f"github.deploy_app {deploy!r} is not one of the Coolify apps")
+        if not created:                                                        # remembered, so a re-run finds this App by itself
+            try:
+                _write_secret(self.home / "shipyard-github-app.json", json.dumps({"app_id": app_id, "slug": "", "key_file": key}))
+            except OSError:
+                pass
         self.say(f"  GitHub App installation {inst} on {repo}")
         return {"app_id": app_id, "key": key, "repo": repo, "deploy": deploy or None, "installation": inst}
 

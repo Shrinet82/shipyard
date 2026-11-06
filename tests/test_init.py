@@ -419,16 +419,19 @@ def test_declining_the_github_app_skips_repo_features(home):
     assert inst.github({"demo-web": "u-web"}) is None
 
 
-def test_a_project_name_switch_would_refuse_is_asked_again_before_anything_is_created(home):
-    said, names = [], iter(["Ship-test-3", "shop-test"])
-    a = answers(home)
-    a.pop("project")
-    inst = Installer(a, home, interactive=True, ask=lambda q, d: next(names) if q.startswith("Project name") else d, secret=lambda q: "x", say=said.append, gateway=FakeGw,
-                     http=http_fake(), workdir=Path(__file__).parent.parent)
-    assert inst.project_name() == "shop-test" and any("lowercase" in s for s in said)
-    with pytest.raises(InitError, match="not valid"):
-        Installer(answers(home, project="Bad Name"), home, interactive=False, say=lambda s: None, gateway=FakeGw, http=http_fake()).project_name()
-    assert Installer(answers(home, project="demo"), home, interactive=False, say=lambda s: None, gateway=FakeGw, http=http_fake()).project_name() == "demo"
+def test_whatever_is_typed_as_a_project_name_is_turned_into_one_switch_accepts(home):
+    said = []
+    inst = Installer(answers(home), home, interactive=False, say=said.append, gateway=FakeGw, http=http_fake())
+    for typed, want in [("Ship-test-3", "ship-test-3"), ("  My Shop_2 ", "my-shop-2"), ("demo", "demo"), ("A--B", "a-b"), ("x" * 60, "x" * 31)]:
+        assert inst.clean_project_name(typed) == want and Installer.PROJECT.match(want)
+    shown = Installer(answers(home, project="Ship-test-3"), home, interactive=False, say=said.append, gateway=FakeGw, http=http_fake())
+    assert shown.project_name() == "ship-test-3" and any("using the project name 'ship-test-3'" in s for s in said)
+    for hopeless in ("3d", "!"):
+        replies = iter([hopeless, "shop-test"])
+        asking = Installer({}, home, interactive=True, ask=lambda q, d: next(replies), say=lambda s: None, gateway=FakeGw, http=http_fake())
+        assert asking.project_name() == "shop-test"
+    with pytest.raises(InitError, match="cannot be made into a project name"):
+        Installer(answers(home, project="9"), home, interactive=False, say=lambda s: None, gateway=FakeGw, http=http_fake()).project_name()
 
 
 def test_a_github_app_made_on_an_earlier_run_is_offered_again_instead_of_creating_another(home):
@@ -442,3 +445,11 @@ def test_a_github_app_made_on_an_earlier_run_is_offered_again_instead_of_creatin
     nothing = Installer(a, home, interactive=True, ask=lambda q, d: d, secret=lambda q: "x", say=lambda s: None, gateway=FakeGw, http=http_fake(),
                         github_check=lambda *x: (_ for _ in ()).throw(RuntimeError("404")), app_creator=lambda *x, **k: created.append(1) or {"app_id": "1"}, workdir=Path(__file__).parent.parent)
     assert nothing.create_github_app() == {"app_id": "1"} and created                    # not installed on that repository: a new one is made
+
+
+def test_an_app_id_typed_once_is_remembered_for_the_next_run(home):
+    a = answers(home)
+    inst = Installer(a, home, interactive=False, say=lambda s: None, gateway=FakeGw, http=http_fake(), github_check=lambda *x: "inst-9", workdir=Path(__file__).parent.parent)
+    inst.github({"demo-web": "u-web"})
+    saved = json.loads((home / "shipyard-github-app.json").read_text())
+    assert saved["app_id"] == "123" and saved["key_file"].endswith("gh.pem")
