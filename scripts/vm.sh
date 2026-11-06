@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Manage the Shipyard dev VMs (AWS profile new-account, Mumbai). SY_ENV=shipyard2 addresses the trial install's VMs instead of the originals.
+# The project author's AWS helper for lab machines. It is NOT part of the install. For your own account set AWS_PROFILE, AWS_REGION,
+# SY_KEY_NAME (an EC2 key pair) and SY_KEY_FILE (its private key); SY_ENV names the environment (VMs are tagged Project=<name>).
 #   scripts/vm.sh status | start | stop | ssh build|coolify [cmd...] | put <local> <remote-path-on-build> | myip | tunnel [mattermost] [switch]
 set -euo pipefail
-export AWS_PROFILE=${AWS_PROFILE:-new-account} AWS_REGION=ap-south-1
-KEY=$HOME/.ssh/shipyard-dev
+export AWS_PROFILE=${AWS_PROFILE:-new-account} AWS_REGION=${AWS_REGION:-ap-south-1}
+KEY=${SY_KEY_FILE:-$HOME/.ssh/shipyard-dev}
+KEY_NAME=${SY_KEY_NAME:-shipyard-dev}
 ENVNAME=${SY_ENV:-shipyard}            # which set of VMs: the original (shipyard) or a trial install (SY_ENV=shipyard2)
 SG_NAME=${ENVNAME}-sg
 
@@ -44,7 +46,7 @@ case "${1:-status}" in
           vpc=$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
           sg=$(aws ec2 create-security-group --group-name "$SG_NAME" --description "$ENVNAME: SSH from one address" --vpc-id "$vpc" --query GroupId --output text)
           aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr "$(curl -s https://checkip.amazonaws.com)/32" >/dev/null
-          id=$(aws ec2 run-instances --image-id "$ami" --instance-type "${SY_TYPE:-t3.xlarge}" --key-name shipyard-dev --security-group-ids "$sg" --associate-public-ip-address \
+          id=$(aws ec2 run-instances --image-id "$ami" --instance-type "${SY_TYPE:-t3.xlarge}" --key-name "$KEY_NAME" --security-group-ids "$sg" --associate-public-ip-address \
                  --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=80,VolumeType=gp3,DeleteOnTermination=true}' \
                  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${ENVNAME}-build},{Key=Project,Value=$ENVNAME}]" "ResourceType=volume,Tags=[{Key=Project,Value=$ENVNAME}]" \
                  --query 'Instances[0].InstanceId' --output text)

@@ -66,7 +66,7 @@ Commands are mentions, never a `!` prefix, because Switch uses `!` for its own c
 
 ## Install
 
-One command on a blank Ubuntu 24.04 machine (4 vCPU and 16 GB is comfortable; 4 GB is the minimum):
+One command on a blank Ubuntu 24.04 machine (4 vCPU and 16 GB is comfortable; 4 GB is the minimum). Requirements: a user with `sudo` (a password is fine, it is asked once), `systemd`, and internet access. Tested on Ubuntu 24.04 on x86-64 only; other Linux systems and macOS are not tested, and nothing in the install path is tied to a particular username or cloud account.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shrinet82/shipyard/main/scripts/install.sh | bash

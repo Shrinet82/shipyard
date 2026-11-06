@@ -4,7 +4,7 @@
 # RBAC) and writes the three least-privilege kubeconfigs with scripts/k8s_kubeconfigs.sh. Run on the Shipyard machine as a sudo-capable user.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-command -v kubectl >/dev/null || { curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && sudo install -m 755 /tmp/kubectl /usr/local/bin/kubectl; }
+command -v kubectl >/dev/null || { curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl" && sudo install -m 755 /tmp/kubectl /usr/local/bin/kubectl; }
 command -v k3d >/dev/null || curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | sudo bash >/dev/null 2>&1
 sudo k3d cluster list 2>/dev/null | grep -q '^shipyard' || sudo k3d cluster create shipyard --api-port 127.0.0.1:6443 --servers 1 --agents 0 --wait >/dev/null 2>&1
 sudo mkdir -p /etc/shipyard

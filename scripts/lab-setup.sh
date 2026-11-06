@@ -13,7 +13,7 @@ sudo apt-get update -qq
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2 git curl python3-yaml openssl >/dev/null
 sudo systemctl enable --now docker >/dev/null 2>&1
 sudo usermod -aG docker "$USER"
-command -v kubectl >/dev/null || { curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && sudo install -m 755 /tmp/kubectl /usr/local/bin/kubectl; }
+command -v kubectl >/dev/null || { curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl" && sudo install -m 755 /tmp/kubectl /usr/local/bin/kubectl; }
 command -v k3d >/dev/null || curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | sudo bash >/dev/null 2>&1
 
 step "2/4 Kubernetes cluster 'lab'"

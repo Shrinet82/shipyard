@@ -5,8 +5,8 @@ from shipyard.wizard import Wizard
 
 class Machine:
     """A pretend machine: what is installed, and what the wizard asked it to run."""
-    def __init__(self, switch=True, controller=True, codex=True, installed=False):
-        self.switch, self.controller, self.codex, self.installed = switch, controller, codex, installed
+    def __init__(self, switch=True, controller=True, codex=True, installed=False, passwordless=True):
+        self.switch, self.controller, self.codex, self.installed, self.passwordless = switch, controller, codex, installed, passwordless
         self.streamed, self.quieted, self.installs, self.doctors = [], [], [], 0
         self.fail_streams: set[str] = set()
 
@@ -19,6 +19,8 @@ class Machine:
             return 0 if argv[3] == "switch-agents" and self.controller else 1
         if argv[:2] == ["systemctl", "--user"]:
             return 0 if self.installed else 1
+        if argv[:3] == ["sudo", "-n", "true"]:
+            return 0 if self.passwordless else 1
         if "login" in argv and "status" in argv:
             return 0 if self.codex else 1
         return 0
@@ -122,3 +124,15 @@ def test_a_small_machine_is_refused_before_anything_is_installed(tmp_path, monke
     monkeypatch.setattr(Wizard, "_memory_gb", staticmethod(lambda: 1.0))
     w = wizard(tmp_path, m)
     assert w.run() is False and any("memory" in s for s in w.said) and m.streamed == []
+
+
+def test_a_sudo_that_wants_a_password_is_asked_once_up_front(tmp_path):
+    m = Machine(installed=True, passwordless=False)
+    (tmp_path / "shipyard.yaml").write_text("x")
+    w = wizard(tmp_path, m)
+    assert w.run() is True
+    assert m.streamed[0] == ["sudo", "-v"] and any("ask for your password once" in s for s in w.said)
+    m2 = Machine(installed=True)                                               # cloud images: nothing to ask
+    (tmp_path / "shipyard.yaml").write_text("x")
+    wizard(tmp_path, m2).run()
+    assert ["sudo", "-v"] not in m2.streamed

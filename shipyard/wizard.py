@@ -81,6 +81,10 @@ class Wizard:
             problems.append(f"only {mem:.1f} GB of memory; 4 GB is the minimum, 8 GB is comfortable")
         if shutil.which("sudo") is None:
             problems.append("sudo is missing; the Switch and agent installers need it")
+        elif self.quiet(["sudo", "-n", "true"]) != 0:
+            self.say("   sudo will ask for your password once (the installers and the agents' sign-in use it).")
+            if self.stream(["sudo", "-v"]) != 0:
+                problems.append("sudo did not accept the password")
         if problems:
             raise WizardError("; ".join(problems))
         self.say(f"   ok: {free:.0f} GB free" + (f", {mem:.0f} GB memory" if mem else ""))

@@ -3,13 +3,14 @@
 #
 # Why: agents run shell tools. As the platform's own user they can read its secrets (the Switch .env,
 # Coolify and GitHub keys, the cluster admin kubeconfig) and use Docker. As `agentrun` they cannot:
-# no sudo, no docker group, and a systemd unit that hides /home/ubuntu, /root and /etc/shipyard.
+# no sudo, no docker group, and a systemd unit that hides the platform user's home, /root and /etc/shipyard.
 #
 # Run on the build VM as the platform user (needs sudo):  bash scripts/isolate_agents.sh
 # Idempotent. Steps that need a person (the Codex login) are printed at the end.
 set -euo pipefail
 AGENT_USER=${AGENT_USER:-agentrun}
-PLATFORM_USER=${PLATFORM_USER:-ubuntu}
+PLATFORM_USER=${PLATFORM_USER:-$USER}
+PLATFORM_HOME=$(getent passwd "$PLATFORM_USER" | cut -d: -f6)
 SWITCH_ENV=${SWITCH_ENV:-$HOME/switch/.env}
 BASE=${BASE:-http://localhost:8000}
 
@@ -48,7 +49,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ReadWritePaths=/home/$AGENT_USER
-InaccessiblePaths=-/home/$PLATFORM_USER -/root -/etc/shipyard
+InaccessiblePaths=-$PLATFORM_HOME -/root -/etc/shipyard
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
