@@ -161,6 +161,7 @@ class Service:
             return self._rooms(project, sender, cmd)
         if cmd.verb == "whoami":
             role = self.cfg.policy.members.get(project.name, {}).get(sender)
+            self.gk.audit.write(project=project.name, actor=sender, event="whoami", action="whoami", target=project.name, role=role.name.lower() if role else "none")
             return f"Your id is `{sender}`. Your role in {project.name}: {role.name.lower() if role else 'none'}."
         if cmd.verb in ("approve", "deny"):
             return self._approval_reply(project, room, sender, cmd)

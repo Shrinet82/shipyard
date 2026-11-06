@@ -80,12 +80,14 @@ class Installer:
                  say: Callable[[str], None] = print, gateway: Callable[[str, str, str], Any] = Gateway,
                  http: Callable[..., tuple[int, Any]] = _http, run: Callable[..., Any] | None = None,
                  github_check: Callable[[str, str, str], str] | None = None, python: str = sys.executable, workdir: Path = REPO_DIR,
-                 app_creator: Callable[..., dict[str, Any]] | None = None):
+                 app_creator: Callable[..., dict[str, Any]] | None = None, whoami_waiter: Callable[[str, int], Any] | None = None):
         self.a, self.home, self.interactive = answers, home, interactive
         self._ask, self._secret, self.say, self.gateway, self.http = ask or self._input, secret or getpass.getpass, say, gateway, http
         self.run = run or (lambda argv, **kw: subprocess.run(argv, capture_output=True, text=True, timeout=60, **kw))
         self.github_check, self.python, self.workdir = github_check or self._github_check, python, workdir
         self.app_creator = app_creator or self._create_app
+        from .claim import wait_for_whoami
+        self.whoami_waiter = whoami_waiter or wait_for_whoami
         self.t0 = time.time()
         self.created: dict[str, list[str]] = {"ops": [], "maintainers": [], "incidents": []}
         self.use_template, self.filled = False, {}
@@ -198,13 +200,25 @@ class Installer:
         return chosen
 
     def coolify(self) -> tuple[str, str, dict[str, str]]:
+        if self.a.get("coolify", {}).get("skip"):
+            return "", "", {}
         url = self.get("coolify.url", "Coolify URL, e.g. http://10.0.0.5:8000 (blank to skip)", "").rstrip("/")
         if not url:
             return "", "", {}
-        token = os.environ.get("COOLIFY_TOKEN") or self.get("coolify.token", "Coolify API token (needs read, read:sensitive, write and deploy; input hidden)", secret=True, required=True)
-        status, rows = self.http("GET", f"{url}/api/v1/applications", {"Authorization": f"Bearer {token}"})
-        if status != 200 or not isinstance(rows, list):
-            raise InitError(f"Coolify refused the token or the URL ({status})")
+        token = os.environ.get("COOLIFY_TOKEN") or str(self.a.get("coolify", {}).get("token") or "")
+        tries = 3 if self.interactive and not token else 1
+        for attempt in range(tries):
+            if not token:
+                if self.interactive:
+                    self.say(f"  Create the token in Coolify: {url}/security/api-tokens → New token, tick read, read:sensitive, write and deploy.")
+                token = self.get("coolify.token", "Coolify API token (input hidden)", secret=True, required=True)
+            status, rows = self.http("GET", f"{url}/api/v1/applications", {"Authorization": f"Bearer {token}"})
+            if status == 200 and isinstance(rows, list):
+                break
+            if attempt + 1 == tries:
+                raise InitError(f"Coolify refused the token or the URL ({status}). Is the API enabled (Settings → API Access)?")
+            self.say(f"  Coolify refused that token ({status}). Check the permissions and try again.")
+            token = ""
         apps = {str(r["name"]).replace(" ", "-").lower(): str(r["uuid"]) for r in rows if r.get("uuid") and r.get("name")}
         want = self.a.get("coolify", {}).get("apps")
         if want is None and self.interactive and apps:
@@ -440,7 +454,7 @@ class Installer:
         self.make_rooms(gw, project, gk_id, rooms["ops"] + rooms["maintainers"] + rooms["incidents"])
         rooms = {k: rooms[k] + self.created[k] for k in rooms}
         cfg = self.build_config(project, url, env_file, rooms, cool, gh, bool(self.a.get("dashboard", True)))
-        owner = self.get("owner", "Your chat identity (what `@gatekeeper whoami` prints; blank to add it after)", "")
+        owner = self.get("owner", "", "")
         if owner:
             cfg["projects"][project]["members"][owner] = "owner"
         self.paths["config"].write_text(yaml.safe_dump(cfg, sort_keys=False))
@@ -451,7 +465,34 @@ class Installer:
         self.say("5/5 Starting")
         self.service()
         cfg["_project"] = project
+        if not owner and self.interactive:
+            self.claim_owner(project)
         return cfg
+
+    def claim_owner(self, project: str) -> None:
+        """No owner yet: wait for the person to type `@gatekeeper whoami`, confirm it is them, make them the owner."""
+        from .claim import last_whoami_id, pretty, wait_for_whoami
+        db_path = str(self.home / "shipyard.db")
+        start = last_whoami_id(db_path)
+        self.say("  Last step: make yourself the owner. In any Shipyard room (Mattermost or Discord) type:  @gatekeeper whoami")
+        self.say("  I am waiting for it (Ctrl-C to skip and use `python3 -m shipyard add-owner` later).")
+        try:
+            seen = self.whoami_waiter(db_path, start)
+        except KeyboardInterrupt:
+            self.say("  skipped")
+            return
+        if seen is None:
+            self.say("  Nothing arrived in 10 minutes. Run `@gatekeeper whoami`, then `python3 -m shipyard add-owner --identity '<that id>'`.")
+            return
+        _, identity = seen
+        if self._ask(f"  Saw `whoami` from {pretty(identity)}. Make them the owner of {project}? (yes/no)", "yes").lower() not in ("yes", "y"):
+            self.say("  not added")
+            return
+        from .members import MemberStore
+        cfg = load_config(self.paths["config"])
+        MemberStore(self.home / "shipyard-members.json", cfg.policy, None).add_owner(project, identity)
+        self.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"])
+        self.say(f"  {pretty(identity)} is now the owner. Try `@gatekeeper status` in the room.")
 
 
 def doctor(config_path: Path, say: Callable[[str], None] = print, http: Callable[..., tuple[int, Any]] = _http,

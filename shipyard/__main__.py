@@ -306,6 +306,10 @@ def main() -> None:
     t.add_argument("--identity", required=True, help="the member's chat id, as `@gatekeeper whoami` prints it")
     t.add_argument("--project", default=None)
     t.add_argument("--hours", type=float, default=8.0)
+    ins = sub.add_parser("install", help="guided install from a blank machine: Switch, agents, Shipyard, connectors (one step at a time)")
+    ins.add_argument("--answers", help="a YAML file of answers: no questions are asked (same as `init --answers`)")
+    ins.add_argument("--home", default=os.path.expanduser("~"))
+    ins.add_argument("--dry-run", action="store_true")
     c = sub.add_parser("connect", help="connect Shipyard to a cluster or a tool")
     csub = c.add_subparsers(dest="what", required=True)
     ck = csub.add_parser("kubernetes", help="give Shipyard least-privilege access to a namespace of the cluster your kubectl points at")
@@ -342,7 +346,13 @@ def main() -> None:
     o.add_argument("--identity", required=True, help="the id that `@gatekeeper whoami` printed")
     o.add_argument("--project", default=None)
     args = ap.parse_args()
-    if args.cmd == "init":
+    if args.cmd == "install":
+        if args.answers or args.dry_run:
+            _init(args)
+        else:
+            from .wizard import Wizard
+            raise SystemExit(0 if Wizard(Path(args.home)).run() else 1)
+    elif args.cmd == "init":
         _init(args)
     elif args.cmd == "doctor":
         raise SystemExit(0 if doctor(Path(args.config)) else 1)
