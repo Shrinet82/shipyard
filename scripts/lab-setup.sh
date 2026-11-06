@@ -27,6 +27,21 @@ if [ -d "$APP_DIR/.git" ]; then git -C "$APP_DIR" pull -q --ff-only; else git cl
 sudo docker build -q -t namaste:local "$APP_DIR" >/dev/null
 sudo k3d image import namaste:local -c lab >/dev/null
 kubectl apply -f "$APP_DIR/deploy/k8s.yaml" >/dev/null
+# The pods ship logs to SigNoz on this machine. `host.k3d.internal` is only put in the cluster's DNS when k3d starts it, so after a reboot it can be missing
+# and the logs stop silently. A Service that points at the k3d network's gateway address (this machine) does not depend on that.
+GATEWAY=$(sudo docker network inspect k3d-lab -f '{{(index .IPAM.Config 0).Gateway}}')
+kubectl apply -f - >/dev/null <<Y
+apiVersion: v1
+kind: Service
+metadata: {name: signoz-otlp, namespace: namaste}
+spec: {ports: [{port: 4318, targetPort: 4318}]}
+---
+apiVersion: v1
+kind: Endpoints
+metadata: {name: signoz-otlp, namespace: namaste}
+subsets: [{addresses: [{ip: $GATEWAY}], ports: [{port: 4318}]}]
+Y
+kubectl -n namaste set env deploy/namaste OTLP_LOGS_URL=http://signoz-otlp:4318/v1/logs >/dev/null
 kubectl -n namaste rollout status deploy/namaste --timeout=180s
 kubectl -n namaste get pods
 
