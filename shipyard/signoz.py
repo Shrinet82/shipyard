@@ -189,7 +189,7 @@ def bootstrap(url: str, *, http: Callable[..., tuple[int, Any]] = _http, now: Ca
         raise SigNozError("SigNoz has no Viewer role")
     if not existing:
         _plain(http, "POST", url + "/api/v1/service_account_roles", token, {"roleId": viewer, "serviceAccountId": sa})
-    key = _plain(http, "POST", f"{url}/api/v1/service_accounts/{sa}/keys", token, {"name": "shipyard", "expiresAt": int(now() + 365 * 86400)})["data"]["key"]
+    key = _plain(http, "POST", f"{url}/api/v1/service_accounts/{sa}/keys", token, {"name": f"shipyard-{int(now())}", "expiresAt": int(now() + 365 * 86400)})["data"]["key"]
     return {"admin_email": email, "admin_password": password, "token": token, "key": key}
 
 

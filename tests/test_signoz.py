@@ -207,6 +207,7 @@ def test_bootstrap_makes_the_admin_a_viewer_key_and_returns_the_login():
     assert assign == {"roleId": "r-viewer", "serviceAccountId": "sa-1"}                          # the Viewer role, never the admin one
     key_call = next(c for c in h.calls if c[1].endswith("/keys"))
     assert key_call[3]["expiresAt"] == 1_000_000 + 365 * 86400 and key_call[2]["Authorization"] == "Bearer tok-1"
+    assert key_call[3]["name"] == "shipyard-1000000"                                           # a new name each time: SigNoz refuses a repeated one
     context = next(c for c in h.calls if c[1].startswith("/api/v2/sessions/context"))[1]
     assert "email=admin%40shipyard.local" in context and "ref=http%3A%2F%2Fsz%3A8080" in context
 
