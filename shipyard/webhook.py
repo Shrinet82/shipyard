@@ -28,8 +28,10 @@ EVENTS = {"deployment_failed", "status_changed", "deployment_success", "restart_
 
 
 def make_handler(secret: str, on_event: Callable[[dict[str, Any]], None], github_secret: bytes | None = None,
-                 on_github: Callable[[str, dict[str, Any]], None] | None = None):
+                 on_github: Callable[[str, dict[str, Any]], None] | None = None,
+                 on_signoz: Callable[[dict[str, Any]], None] | None = None):
     prefix = "/hooks/coolify/"
+    signoz_prefix = "/hooks/signoz/"
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args: Any) -> None:
@@ -65,10 +67,34 @@ def make_handler(secret: str, on_event: Callable[[dict[str, Any]], None], github
             except Exception:
                 log.exception("GitHub webhook handling failed")
 
+        def _signoz(self) -> None:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return self._reply(400)
+            if length > MAX_BODY:
+                return self._reply(413)
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                return self._reply(400)
+            if not isinstance(payload, dict):
+                return self._reply(400)
+            self._reply(200)
+            try:
+                on_signoz(payload)                           # type: ignore[misc]
+            except Exception:
+                log.exception("SigNoz alert handling failed")
+
         def do_POST(self) -> None:
             path = self.path.split("?", 1)[0]
             if path == "/hooks/github" and github_secret and on_github:
                 return self._github()
+            if on_signoz and path.startswith(signoz_prefix):                 # SigNoz's alert channel: same secret in the URL, Alertmanager's JSON
+                if not hmac.compare_digest(path[len(signoz_prefix):], secret):
+                    log.warning("SigNoz webhook with a wrong path from %s", self.client_address[0])
+                    return self._reply(404)
+                return self._signoz()
             supplied = path[len(prefix):] if path.startswith(prefix) else ""
             if not supplied or not hmac.compare_digest(supplied, secret):
                 log.warning("webhook with a wrong path from %s", self.client_address[0])
@@ -98,12 +124,13 @@ def make_handler(secret: str, on_event: Callable[[dict[str, Any]], None], github
 
 
 def serve(secret: str, on_event: Callable[[dict[str, Any]], None], bind: str, port: int, github_secret: bytes | None = None,
-          on_github: Callable[[str, dict[str, Any]], None] | None = None) -> ThreadingHTTPServer:
+          on_github: Callable[[str, dict[str, Any]], None] | None = None,
+          on_signoz: Callable[[dict[str, Any]], None] | None = None) -> ThreadingHTTPServer:
     if len(secret) < 24:
         raise ValueError("the webhook secret must be at least 24 characters")
     if github_secret is not None and len(github_secret) < 24:
         raise ValueError("the GitHub webhook secret must be at least 24 characters")
-    server = ThreadingHTTPServer((bind, port), make_handler(secret, on_event, github_secret, on_github))
+    server = ThreadingHTTPServer((bind, port), make_handler(secret, on_event, github_secret, on_github, on_signoz))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     log.info("webhook listener on %s:%d", bind, port)
     return server

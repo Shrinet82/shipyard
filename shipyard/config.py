@@ -46,6 +46,14 @@ class KubeCfg:
 
 
 @dataclass(frozen=True)
+class SigNozCfg:
+    url: str
+    api_key_file: str
+    service_map: dict[str, str] = field(default_factory=dict)   # SigNoz service name -> Shipyard app
+    project: str = ""                                          # which project its alerts belong to (default: the only one)
+
+
+@dataclass(frozen=True)
 class Project:
     name: str
     ops_rooms: frozenset[str]          # alerts and diagnosis
@@ -147,6 +155,7 @@ class Config:
     standup_at: str = ""                                   # "09:00" (IST): the daily Board standup in the maintainers rooms; empty = off
     hosts: dict[str, HostCfg] = field(default_factory=dict)
     kube: KubeCfg | None = None
+    signoz: SigNozCfg | None = None
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
     desks: dict[str, dict[str, str]] = field(default_factory=dict, compare=False)     # project -> member identity -> personal desk room (filled at start-up)
     desks_file: str = "~/shipyard-desks.json"
@@ -300,11 +309,24 @@ def load_config(path: str | Path) -> Config:
         standup_at=_hhmm((raw.get("tickets") or {}).get("standup_at", "")),
         hosts=hosts,
         kube=kube,
+        signoz=_signoz(raw.get("signoz"), projects),
         raw=raw,
         desks_file=str(raw.get("desks_file", "~/shipyard-desks.json")),
         rooms_file=str(raw.get("rooms_file", "~/shipyard-rooms.json")),
         discord_token_file=str((raw.get("discord") or {}).get("token_file", "")),
     )
+
+
+def _signoz(raw: Any, projects: dict[str, Project]) -> SigNozCfg | None:
+    if not raw:
+        return None
+    if not str(raw.get("url", "")).startswith(("http://", "https://")):
+        raise ValueError("signoz.url must be an http(s) address")
+    project = str(raw.get("project", ""))
+    if project and project not in projects:
+        raise ValueError(f"signoz.project {project!r} is not a project")
+    return SigNozCfg(str(raw["url"]).rstrip("/"), str(raw.get("api_key_file", "~/signoz.env")),
+                     {str(k): str(v) for k, v in (raw.get("service_map") or {}).items()}, project)
 
 
 def expand(path: str) -> str:

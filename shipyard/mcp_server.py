@@ -24,7 +24,7 @@ TOOL = {
         "asked you. You hold no write access yourself. Cite `message_id`, the id of that person's message. "
         "Reads run at once; deploys, restarts and rollbacks are posted in the room for a person to approve, so "
         "tell them the approval id and do not retry. Actions: coolify.status, coolify.deploy, coolify.restart, "
-        "coolify.rollback, repo.pr_list (target: any word), repo.pr_status (target: the PR number), repo.ci (target: a PR number, a commit, or the word workflows; the CI that ran, who started it and its artifacts), and k8s.exec or "
+        "coolify.rollback, repo.pr_list (target: any word), repo.pr_status (target: the PR number), signoz.read (target: alerts, rules, logs:<service> or errors:<service>; SigNoz alerts and logs, read only), repo.ci (target: a PR number, a commit, or the word workflows; the CI that ran, who started it and its artifacts), and k8s.exec or "
         "coolify.exec (target: the application; args {\"argv\": [\"tail\", \"-n\", \"50\", \"/var/log/app.log\"]}) to run one "
         "read-only diagnostic inside its container or pod: ls, cat, tail, grep, ps, df, curl http://localhost:PORT/health and the like. "
         "Files that hold credentials are refused. You cannot merge."
@@ -42,7 +42,7 @@ TOOL = {
     },
     "annotations": {"readOnlyHint": False, "destructiveHint": False},
 }
-ALLOWED_ACTIONS = {"coolify.status", "coolify.deploy", "coolify.restart", "coolify.rollback", "repo.pr_list", "repo.pr_status", "repo.ci",
+ALLOWED_ACTIONS = {"coolify.status", "coolify.deploy", "coolify.restart", "coolify.rollback", "repo.pr_list", "repo.pr_status", "repo.ci", "signoz.read",
                    "k8s.exec", "coolify.exec"}
 
 

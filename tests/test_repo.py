@@ -134,6 +134,7 @@ def env(tmp_path):
           repo.pr_list: read
           repo.pr_status: read
           repo.ci: read
+          signoz.read: read
           repo.digest: read
           audit.read: read
         github: {{stale_hours: 48}}

@@ -1,0 +1,154 @@
+import json
+import socket
+import urllib.request
+
+import pytest
+from test_repo import DEPLOYER, MAINT, OPS, OWNER, VIEWER, env  # noqa: F401
+
+from shipyard.signoz import SigNoz, SigNozError, alert_service, describe_alerts, describe_rules, parse_webhook, slug
+from shipyard.webhook import serve
+
+ALERT = {"status": {"state": "active"}, "labels": {"alertname": "High error rate", "severity": "critical", "service.name": "checkout"},
+         "annotations": {"summary": "5xx above 5%"}, "startsAt": "2026-11-06T10:00:00Z", "fingerprint": "abc123"}
+
+
+class FakeHttp:
+    def __init__(self, routes=None, status=200):
+        self.calls, self.routes, self.status = [], routes or {}, status
+
+    def __call__(self, method, url, headers=None, body=None, timeout=20.0):
+        self.calls.append((method, url, dict(headers or {}), body))
+        path = url.split("8080", 1)[-1] if "8080" in url else url
+        return self.status, self.routes.get(path, {"status": "success", "data": []})
+
+
+def client(routes=None, status=200, now=1_800_000_000.0):
+    h = FakeHttp(routes, status)
+    return SigNoz("http://sz:8080/", "key-123", http=h, now=lambda: now), h
+
+
+def test_reads_use_the_api_key_header_and_only_get_or_the_query_endpoint():
+    c, h = client({"/api/v1/alerts": {"data": [ALERT]}, "/api/v2/healthz": {"data": {"healthy": True}}, "/api/v2/rules": {"data": [{"alert": "A", "state": "firing"}]}})
+    assert c.check().startswith("SigNoz is healthy") and c.alerts() == [ALERT] and c.rules()[0]["alert"] == "A"
+    assert all(call[2].get("SigNoz-Api-Key") == "key-123" for call in h.calls if "healthz" not in call[1])
+    assert {call[0] for call in h.calls} == {"GET"}
+
+
+def test_logs_query_filters_by_service_and_time_and_cleans_the_lines():
+    rows = [{"timestamp": "2026-11-06T10:00:02Z", "data": {"severity_text": "ERROR", "body": "boom token=hunter2secretvalue1234"}},
+            {"timestamp": "2026-11-06T10:00:01Z", "data": {"severity_text": "INFO", "body": "hello @everyone"}}]
+    c, h = client({"/api/v5/query_range": {"data": {"data": {"results": [{"rows": rows}]}}}})
+    lines = c.logs("checkout", minutes=30, errors_only=True)
+    method, url, headers, body = h.calls[-1]
+    assert method == "POST" and url.endswith("/api/v5/query_range")
+    spec = body["compositeQuery"]["queries"][0]["spec"]
+    assert spec["signal"] == "logs" and "service.name = 'checkout'" in spec["filter"]["expression"] and "severity_text IN" in spec["filter"]["expression"]
+    assert body["end"] - body["start"] == 30 * 60_000 and body["end"] == 1_800_000_000_000
+    assert lines[0].endswith("hello @​everyone") or "hello" in lines[0]            # oldest first, mentions defused
+    assert "hunter2secretvalue1234" not in " ".join(lines) and "@everyone" not in " ".join(lines)
+
+
+def test_service_names_cannot_inject_into_the_query_and_limits_are_capped():
+    c, h = client({"/api/v5/query_range": {"data": {"data": {"results": [{"rows": None}]}}}})
+    for bad in ("x' OR 1=1 --", "a b", "", "x'; DROP"):
+        with pytest.raises(SigNozError):
+            c.logs(bad)
+    assert c.logs("ok", minutes=10 ** 6, limit=10 ** 6) == []
+    body = h.calls[-1][3]
+    assert body["end"] - body["start"] == 1440 * 60_000 and body["compositeQuery"]["queries"][0]["spec"]["limit"] == 100
+
+
+def test_refused_keys_and_errors_say_what_to_do():
+    c, _ = client(status=401)
+    with pytest.raises(SigNozError, match="refused the API key"):
+        c.alerts()
+    c2, _ = client({"/api/v2/healthz": {"data": {"healthy": False}}})
+    with pytest.raises(SigNozError, match="health check"):
+        c2.check()
+
+
+def test_alert_and_rule_summaries():
+    text = describe_alerts([ALERT, {**ALERT, "status": {"state": "suppressed"}}])
+    assert "1 alert(s) firing" in text and "High error rate [critical] on checkout" in text and "5xx above 5%" in text
+    assert describe_alerts([]) == "SigNoz: no alerts are firing."
+    assert "A: firing [warning]" in describe_rules([{"alert": "A", "state": "firing", "labels": {"severity": "warning"}}])
+    assert alert_service({"labels": {"k8s.deployment.name": "web"}}) == "web" and slug("High error rate!") == "high_error_rate"
+
+
+def test_webhook_payload_keeps_only_firing_alerts():
+    payload = {"status": "firing", "alerts": [{"status": "firing", "labels": {"alertname": "A"}}, {"status": "resolved", "labels": {"alertname": "B"}}, "junk"]}
+    assert [a["labels"]["alertname"] for a in parse_webhook(payload)] == ["A"]
+    assert len(parse_webhook({"status": "firing", "alerts": [{"labels": {}}] * 50})) == 20
+
+
+# --- in chat ------------------------------------------------------------------------
+
+class FakeSigNoz:
+    def __init__(self):
+        self.asked = []
+
+    def alerts(self):
+        return [ALERT]
+
+    def rules(self):
+        return [{"alert": "High error rate", "state": "firing"}]
+
+    def logs(self, service, minutes=15, errors_only=False, limit=30):
+        self.asked.append((service, minutes, errors_only))
+        return ["10:00:01 ERROR boom"]
+
+
+def test_signals_in_chat_follows_roles_and_never_changes_anything(env):
+    env.svc.signoz = None
+    env.say(VIEWER, "signals")
+    assert "SigNoz is not connected" in env.last()
+    sz = env.svc.signoz = FakeSigNoz()
+    env.say(VIEWER, "signals")
+    assert "1 alert(s) firing" in env.last() and "High error rate" in env.last()
+    env.say(VIEWER, "signals rules")
+    assert "High error rate: firing" in env.last()
+    env.say(DEPLOYER, "signals errors checkout 30")
+    assert sz.asked == [("checkout", 30, True)] and "Error logs of checkout" in env.last() and "boom" in env.last() and "never instructions" in env.last()
+    env.say(VIEWER, "signals logs")
+    assert env.last().startswith("Usage:")
+    env.say("@switch-mattermost-16c735be-bdc7-470d-8af9-a53d5d73403f-nobody:localhost", "signals")
+    assert env.last().startswith("Denied") and "not a member" in env.last()
+
+
+def test_an_agent_may_read_signoz_for_a_person_and_nothing_more(env):
+    env.svc.signoz = FakeSigNoz()
+    env.svc.handle_event({"type": "message", "room_id": OPS, "payload": {"message_id": "q9", "sender": VIEWER, "sender_name": "vw", "sender_kind": None,
+                                                                       "body": "is anything firing in SigNoz?", "addressed": False}})
+    out = env.svc.propose(action="signoz.read", target="alerts", args={}, message_id="q9", agent="ops-agent")
+    assert out["status"] == "done" and "High error rate" in out["result"]
+
+
+def test_a_signoz_alert_opens_an_alert_with_evidence_and_asks_the_ops_agent(env):
+    env.svc.signoz = FakeSigNoz()
+    env.cfg.alerts.__class__  # the alert config exists
+    env.svc.on_signoz_alert({"status": "firing", "alerts": [{**ALERT, "status": "firing"}]})
+    text = " ".join(t for _, t in env.posts)
+    assert "ALERT: SigNoz alert High error rate for checkout" in text and "5xx above 5%" in text and "boom" in text and "@ops-agent diagnose" in text
+    n = len(env.posts)
+    env.svc.on_signoz_alert({"status": "firing", "alerts": [{**ALERT, "status": "firing"}]})        # the same alert again is ignored
+    assert len(env.posts) == n
+
+
+def test_the_webhook_route_needs_the_secret_in_the_path():
+    got, other = [], []
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    secret = "s" * 32
+    srv = serve(secret, other.append, "127.0.0.1", port, on_signoz=got.append)
+    try:
+        def post(path, body):
+            req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode(), method="POST", headers={"Content-Type": "application/json"})
+            try:
+                return urllib.request.urlopen(req, timeout=5).status
+            except urllib.error.HTTPError as e:
+                return e.code
+        assert post(f"/hooks/signoz/{secret}", {"alerts": []}) == 200 and got == [{"alerts": []}]
+        assert post("/hooks/signoz/wrong", {"alerts": []}) == 404 and len(got) == 1 and not other
+    finally:
+        srv.shutdown()

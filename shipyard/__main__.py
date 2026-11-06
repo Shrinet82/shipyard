@@ -26,6 +26,7 @@ from .coolify import CoolifyMcp
 from .desks import Desks
 from .discordapi import Discord, token_from
 from .roomsync import RoomSync
+from .signoz import SigNoz
 from .incidents import Incidents
 from .dashauth import DashAuth
 from .dashboard import Dashboard, serve as serve_dashboard
@@ -120,6 +121,11 @@ def run(config_path: str) -> None:
                 cfg.kube.timeout) if cfg.kube else None
     hostshell = HostShell({n: {"ssh": h.ssh, "key_file": expand(h.key_file), "port": h.port} for n, h in cfg.hosts.items()}) \
         if cfg.hosts else None
+    signoz = None
+    if cfg.signoz:
+        key = read_env(expand(cfg.signoz.api_key_file)).get("SIGNOZ_API_KEY", "") if os.path.exists(expand(cfg.signoz.api_key_file)) else ""
+        signoz = SigNoz(cfg.signoz.url, key) if key else None
+        log.info("SigNoz (read only): %s", "on" if signoz else "off, no key in " + cfg.signoz.api_key_file)
     collector = None
     if github and cfg.sbom.enabled and any(p.repo for p in cfg.projects.values()):
         collector = SbomCollector(cfg, gk, github, SbomStore(expand(cfg.sbom.data_dir), db, gk.lock), switch.post)
@@ -129,7 +135,7 @@ def run(config_path: str) -> None:
     members.load()
     auth = DashAuth(db, gk.lock, session_hours=cfg.dashboard.session_hours)
     service = Service(cfg, gk, coolify, switch.post, agent_name=creds.get("name", "gatekeeper"), github=github,
-                      kube=kube, hostshell=hostshell, sbom=collector, dashauth=auth)
+                      kube=kube, hostshell=hostshell, sbom=collector, dashauth=auth, signoz=signoz)
     tickets = Tickets(gk, cfg.projects, lambda p: dict(cfg.policy.members.get(p, {})), service._name, post=switch.post)
     service.flow = TicketFlow(service, tickets)
     service.incidents = Incidents(db, gk.lock, gk.audit, service.now)
@@ -146,7 +152,8 @@ def run(config_path: str) -> None:
     serve(service, cfg.mcp_port, open(expand(cfg.mcp_token_file)).read().strip())
     gh_secret_file = expand(cfg.github.webhook_secret_file)
     gh_secret = open(gh_secret_file).read().strip().encode() if os.path.exists(gh_secret_file) else None
-    webhook.serve(_webhook_secret(cfg), service.on_coolify_event, cfg.alerts.bind, cfg.alerts.port, gh_secret, service.on_github_hook if gh_secret else None)
+    webhook.serve(_webhook_secret(cfg), service.on_coolify_event, cfg.alerts.bind, cfg.alerts.port, gh_secret, service.on_github_hook if gh_secret else None,
+                   service.on_signoz_alert if signoz else None)
     log.info("GitHub webhooks %s (polling stays on as the fallback)", "accepted at /hooks/github" if gh_secret else "off: no secret file")
 
     stop = switch.stop
@@ -210,6 +217,79 @@ def _add_owner(args) -> None:
     print(f"{args.identity} is now an owner of {project}. The Gatekeeper was restarted.")
 
 
+def _connect(args: argparse.Namespace) -> None:
+    if args.what == "kubernetes":
+        _connect_kubernetes(args)
+    elif args.what == "signoz":
+        _connect_signoz(args)
+
+
+def _connect_signoz(args: argparse.Namespace) -> None:
+    import getpass
+    from .confedit import ConfigEditError, edit_config, project_of
+    from .signoz import SigNozError
+    url = (args.url or input("SigNoz address (for example http://localhost:8080): ")).strip()
+    print("Create a read-only key: SigNoz → Settings → Service Accounts → New, role Viewer, then add a key. Paste it below (hidden).")
+    key = (os.environ.get("SIGNOZ_API_KEY") or getpass.getpass("SigNoz API key: ")).strip()
+    try:
+        print("  " + SigNoz(url, key).check())
+        smap = dict(p.split("=", 1) for p in args.service_map.split(",") if "=" in p)
+        key_file = Path(expand(args.config)).parent / "signoz.env"
+        fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"SIGNOZ_API_KEY={key}\n")
+
+        def change(raw: dict) -> None:
+            name, _ = project_of(raw, args.project)
+            raw["signoz"] = {"url": url.rstrip("/"), "api_key_file": str(key_file), **({"service_map": smap} if smap else {}), "project": name}
+            raw.setdefault("actions", {})["signoz.read"] = "read"
+        edit_config(args.config, change)
+    except (SigNozError, ConfigEditError) as exc:
+        raise SystemExit(str(exc)) from None
+    subprocess.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"], check=False)
+    secret = _webhook_secret(load_config(args.config))
+    print("Connected (read only). In chat: `@gatekeeper signals`, `signals logs <service>`, `signals errors <service>`.\n"
+          "To make SigNoz alerts open incidents here: SigNoz → Settings → Notification channels → New → Webhook, URL:\n"
+          f"  http://{args.host or '<this machine, as SigNoz reaches it>'}:{load_config(args.config).alerts.port}/hooks/signoz/{secret}\n"
+          "then add that channel to your alert rules. The URL contains a secret: do not share it.")
+
+
+def _connect_kubernetes(args: argparse.Namespace) -> None:
+    from .confedit import ConfigEditError, edit_config
+    from .kubeconnect import ConnectError, KubeConnect, choose, config_changes, rbac_manifest
+    kc = KubeConnect(context=args.context)
+    try:
+        print(f"Cluster: kubectl context {kc.current_context()}")
+        kc.check_access()
+        namespace, deployments = choose(kc, args.namespace, args.deployments, input)
+        if args.dry_run:
+            print(f"--- would apply this to the cluster, and write kubeconfigs under {args.kubeconfig_dir}:\n{rbac_manifest(namespace)}")
+            return
+        if not args.yes and input(f"Create read, deploy and exec access for {', '.join(deployments)} in namespace {namespace}? (yes/no) [yes]: ").strip().lower() not in ("", "y", "yes"):
+            raise SystemExit("nothing was changed")
+        result = kc.connect(namespace, deployments, Path(args.kubeconfig_dir))
+        added = []
+        edit_config(args.config, lambda raw: added.extend(config_changes(raw, args.project, result)))
+    except (ConnectError, ConfigEditError) as exc:
+        raise SystemExit(str(exc)) from None
+    subprocess.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"], check=False)
+    print(f"Connected. Apps added: {', '.join(added)}. Try: @gatekeeper status {added[0]}")
+
+
+def _github_app(args: argparse.Namespace) -> None:
+    from .confedit import ConfigEditError, edit_config, set_github
+    from .ghapp import AppSetupError, create_app
+    home = Path(expand(args.config)).parent
+    try:
+        out = create_app(home, args.repo, org=args.org, port=args.port, webhook_url=args.webhook_url)
+        edit_config(args.config, lambda raw: set_github(raw, args.project, app_id=out["app_id"], installation=out["installation"],
+                                                         key_file=out["key_file"], repo=args.repo, deploy=args.deploy_app))
+    except (AppSetupError, ConfigEditError) as exc:
+        raise SystemExit(str(exc)) from None
+    subprocess.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"], check=False)
+    print(f"GitHub App {out['slug']} (id {out['app_id']}) is installed on {args.repo} and added to {args.config}. The Gatekeeper was restarted.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="shipyard")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -226,6 +306,31 @@ def main() -> None:
     t.add_argument("--identity", required=True, help="the member's chat id, as `@gatekeeper whoami` prints it")
     t.add_argument("--project", default=None)
     t.add_argument("--hours", type=float, default=8.0)
+    c = sub.add_parser("connect", help="connect Shipyard to a cluster or a tool")
+    csub = c.add_subparsers(dest="what", required=True)
+    ck = csub.add_parser("kubernetes", help="give Shipyard least-privilege access to a namespace of the cluster your kubectl points at")
+    ck.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
+    ck.add_argument("--namespace", default="")
+    ck.add_argument("--deployments", default="", help="comma-separated names, or 'all'")
+    ck.add_argument("--context", default="", help="kubectl context to use (default: the current one)")
+    ck.add_argument("--project", default=None)
+    ck.add_argument("--kubeconfig-dir", default=os.path.expanduser("~/kube"))
+    ck.add_argument("--yes", action="store_true", help="do not ask to confirm")
+    ck.add_argument("--dry-run", action="store_true", help="print what would be created in the cluster and change nothing")
+    cs = csub.add_parser("signoz", help="read SigNoz's alerts and logs (read only) and receive its alerts")
+    cs.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
+    cs.add_argument("--url", default="", help="SigNoz address, for example http://localhost:8080")
+    cs.add_argument("--project", default=None)
+    cs.add_argument("--host", default="", help="this machine's address as SigNoz reaches it, to print the alert webhook URL")
+    cs.add_argument("--service-map", default="", help="SigNoz service names that differ from your apps: name=app,name=app")
+    ga = sub.add_parser("github-app", help="create the GitHub App with two clicks (no form, no key to copy) and add it to the config")
+    ga.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
+    ga.add_argument("--repo", required=True, help="owner/name of the repository the App works on")
+    ga.add_argument("--org", default="", help="create the App under this organisation instead of your account")
+    ga.add_argument("--port", type=int, default=8767, help="local port of the setup page")
+    ga.add_argument("--project", default=None)
+    ga.add_argument("--deploy-app", default=None, help="the application to deploy after a merge")
+    ga.add_argument("--webhook-url", default="", help="a public webhook address for GitHub to call (default: webhooks off, Shipyard polls)")
     i = sub.add_parser("init", help="set Shipyard up on this machine (needs a running Switch)")
     i.add_argument("--answers", help="a YAML file of answers: no questions are asked")
     i.add_argument("--home", default=os.path.expanduser("~"), help="where the config and secrets go (default: your home)")
@@ -241,6 +346,10 @@ def main() -> None:
         _init(args)
     elif args.cmd == "doctor":
         raise SystemExit(0 if doctor(Path(args.config)) else 1)
+    elif args.cmd == "connect":
+        _connect(args)
+    elif args.cmd == "github-app":
+        _github_app(args)
     elif args.cmd == "add-owner":
         _add_owner(args)
     elif args.cmd == "run":

@@ -79,11 +79,13 @@ class Installer:
                  ask: Callable[[str, str], str] | None = None, secret: Callable[[str], str] | None = None,
                  say: Callable[[str], None] = print, gateway: Callable[[str, str, str], Any] = Gateway,
                  http: Callable[..., tuple[int, Any]] = _http, run: Callable[..., Any] | None = None,
-                 github_check: Callable[[str, str, str], str] | None = None, python: str = sys.executable, workdir: Path = REPO_DIR):
+                 github_check: Callable[[str, str, str], str] | None = None, python: str = sys.executable, workdir: Path = REPO_DIR,
+                 app_creator: Callable[..., dict[str, Any]] | None = None):
         self.a, self.home, self.interactive = answers, home, interactive
         self._ask, self._secret, self.say, self.gateway, self.http = ask or self._input, secret or getpass.getpass, say, gateway, http
         self.run = run or (lambda argv, **kw: subprocess.run(argv, capture_output=True, text=True, timeout=60, **kw))
         self.github_check, self.python, self.workdir = github_check or self._github_check, python, workdir
+        self.app_creator = app_creator or self._create_app
         self.t0 = time.time()
         self.created: dict[str, list[str]] = {"ops": [], "maintainers": [], "incidents": []}
         self.use_template, self.filled = False, {}
@@ -222,19 +224,41 @@ class Installer:
         from .github import GitHubApp
         return GitHubApp(app_id, key_file).installation_for(repo)
 
+    @staticmethod
+    def _create_app(home: Path, repo: str, **kw: Any) -> dict[str, Any]:
+        from .ghapp import create_app
+        return create_app(home, repo, **kw)
+
+    def create_github_app(self) -> dict[str, Any]:
+        """Offer the two-click manifest flow (see ghapp.py). Returns {} when the person skips it or this run cannot ask."""
+        if not self.interactive or self.a.get("github", {}).get("create") == "no":
+            return {}
+        if self.get("github.create", "No GitHub App yet. Create it now with two clicks (no form to fill, no key to copy)? (yes/no)", "yes").lower() not in ("yes", "y"):
+            return {}
+        repo = self.get("github.repo", "Repository the App should work on, owner/name", required=True)
+        org = self.get("github.org", "GitHub organisation that owns the App (blank for your own account)", "")
+        try:
+            return self.app_creator(self.home, repo, org=org, port=int(self.get("github.port", "Local port for the setup page", "8767")), say=self.say)
+        except Exception as exc:
+            raise InitError(f"creating the GitHub App failed: {exc}") from None
+
     def github(self, apps: dict[str, str]) -> dict[str, Any] | None:
-        app_id = self.get("github.app_id", "GitHub App id (blank to skip repo features)", "")
+        app_id = self.get("github.app_id", "GitHub App id (blank to create one now, or skip repo features)", "")
+        created: dict[str, Any] = {}
         if not app_id:
-            return None
-        key = os.path.expanduser(self.get("github.private_key_file", "Path to the GitHub App's private key (.pem)", str(self.home / "shipyard-github.pem")))
-        repo = self.get("github.repo", "Repository, owner/name", required=True)
+            created = self.create_github_app()
+            if not created:
+                return None
+            app_id = created["app_id"]
+        key = os.path.expanduser(created["key_file"] if created else self.get("github.private_key_file", "Path to the GitHub App's private key (.pem)", str(self.home / "shipyard-github.pem")))
+        repo = created["repo"] if created else self.get("github.repo", "Repository, owner/name", required=True)
         if not os.path.exists(key):
             raise InitError(f"{key} does not exist")
         if oct(os.stat(key).st_mode & 0o077) != "0o0":
             os.chmod(key, 0o600)
             self.say("  tightened the key file to 0600")
         try:
-            inst = self.github_check(app_id, key, repo)
+            inst = created["installation"] if created else self.github_check(app_id, key, repo)
         except Exception as exc:
             raise InitError(f"the GitHub App cannot see {repo}: {exc}. Install the App on that repository first") from None
         deploy = self.get("github.deploy_app", "App to deploy after a merge (blank for none)", next(iter(apps), "") if len(apps) == 1 else "")

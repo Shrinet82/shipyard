@@ -224,7 +224,7 @@ def test_interactive_mode_asks_lists_rooms_and_hides_the_token(home):
     def ask(q, d=""):
         asked.append(q)
         return next(replies, "") or d
-    a = {"switch": {"env_file": str(home / "switch/.env")}, "coolify": {"url": "http://cool:8000"}, "github": {"app_id": ""}, "agents": {"create": "no"}, "owner": ""}
+    a = {"switch": {"env_file": str(home / "switch/.env")}, "coolify": {"url": "http://cool:8000"}, "github": {"app_id": "", "create": "no"}, "agents": {"create": "no"}, "owner": ""}
     inst = Installer(a, home, interactive=True, ask=ask, secret=lambda q: secrets_.append(q) or "typed-token", say=lambda s: None, gateway=FakeGw, http=http_fake(),
                      run=lambda *x, **k: SimpleNamespace(returncode=0, stdout="", stderr=""), github_check=lambda *x: "i", workdir=Path(__file__).parent.parent)
     os.environ.pop("COOLIFY_TOKEN", None)
@@ -393,3 +393,27 @@ def test_doctor_counts_roles_from_the_dashboard_file_and_checks_the_audit_chain(
     out.clear()
     assert not doctor(home / "shipyard.yaml", say=out.append, http=lambda *a, **k: (200, "x"), gateway=FakeGw, run=lambda argv: SimpleNamespace(stdout="active"), wait=0)
     assert any("FAIL" in l and "audit chain" in l for l in out)
+
+
+def test_a_missing_github_app_is_created_with_the_two_click_flow(home):
+    made = []
+
+    def fake_creator(h, repo, **kw):
+        made.append((h, repo, kw["org"]))
+        return {"app_id": "555", "slug": "shipyard-x", "key_file": str(home / "gh.pem"), "installation": "909", "repo": repo}
+
+    a = answers(home, github={"app_id": "", "repo": "o/r", "org": "acme", "port": "8800", "create": "yes", "deploy_app": "demo-web"})
+    inst = Installer(a, home, interactive=True, ask=lambda q, d: d, secret=lambda q: "x", say=lambda s: None, gateway=FakeGw, http=http_fake(),
+                     run=lambda *x, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+                     github_check=lambda *x: (_ for _ in ()).throw(AssertionError("an App just created must not be looked up again")),
+                     app_creator=fake_creator, workdir=Path(__file__).parent.parent)
+    gh = inst.github({"demo-web": "u-web"})
+    assert made == [(home, "o/r", "acme")]
+    assert gh["app_id"] == "555" and gh["installation"] == "909" and gh["repo"] == "o/r" and gh["deploy"] == "demo-web"
+
+
+def test_declining_the_github_app_skips_repo_features(home):
+    a = answers(home, github={"app_id": "", "create": "no"})
+    inst = Installer(a, home, interactive=True, ask=lambda q, d: d, secret=lambda q: "x", say=lambda s: None, gateway=FakeGw, http=http_fake(),
+                     run=lambda *x, **k: SimpleNamespace(returncode=0, stdout="", stderr=""), workdir=Path(__file__).parent.parent)
+    assert inst.github({"demo-web": "u-web"}) is None
