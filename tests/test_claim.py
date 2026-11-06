@@ -53,7 +53,7 @@ def test_the_gatekeeper_records_who_asked_whoami(env):
 def make_installer(home, waiter, ask_reply="yes", **kw):
     said, runs = [], []
     inst = Installer(answers(home, owner=""), home, interactive=True, ask=lambda q, d: ask_reply if "owner" in q else d, secret=lambda q: "x", say=said.append,
-                     gateway=FakeGw, http=http_fake(), whoami_waiter=waiter, github_check=lambda *a: "i",
+                     gateway=FakeGw, http=http_fake(), whoami_waiter=waiter, login_maker=None, github_check=lambda *a: "i",
                      run=lambda argv, **k: runs.append(argv) or SimpleNamespace(returncode=0, stdout="active", stderr=""), workdir=Path(__file__).parent.parent, **kw)
     inst.said, inst.runs = said, runs
     return inst
@@ -85,7 +85,7 @@ def test_an_owner_in_the_answers_skips_the_wait(home):
     called = []
     a = answers(home)
     inst = Installer(a, home, interactive=True, ask=lambda q, d: d, secret=lambda q: "x", say=lambda s: None, gateway=FakeGw, http=http_fake(),
-                     whoami_waiter=lambda *x: called.append(x), github_check=lambda *a: "i",
+                     whoami_waiter=lambda *x: called.append(x), login_maker=None, github_check=lambda *a: "i",
                      run=lambda argv, **k: SimpleNamespace(returncode=0, stdout="active", stderr=""), workdir=Path(__file__).parent.parent)
     inst.install()
     assert not called
@@ -104,7 +104,7 @@ def test_a_wrong_coolify_token_is_asked_again_with_the_page_to_create_it(home):
     said = []
     a = answers(home, coolify={"url": "http://cool:8000", "apps": ["demo-web"]})
     inst = Installer(a, home, interactive=True, ask=lambda q, d: d, secret=lambda q: next(tokens), say=said.append, gateway=FakeGw, http=http,
-                     whoami_waiter=lambda *x: None, github_check=lambda *a: "i",
+                     whoami_waiter=lambda *x: None, login_maker=None, github_check=lambda *a: "i",
                      run=lambda argv, **k: SimpleNamespace(returncode=0, stdout="active", stderr=""), workdir=Path(__file__).parent.parent)
     import os
     os.environ.pop("COOLIFY_TOKEN", None)

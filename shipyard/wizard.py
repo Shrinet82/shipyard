@@ -166,6 +166,10 @@ class Wizard:
                 self.say("   That did not work (SigNoz already has an admin of its own, or is elsewhere). Paste a Viewer key instead.")
                 self.connect("signoz")
 
+    def chat_apps(self) -> None:
+        if self.yes("   Add Discord as a chat app too? (Mattermost already works; Discord needs a bot you create once)", "no"):
+            self.connect("discord")
+
     def finish(self) -> bool:
         ok = self.run_doctor(self.home / "shipyard.yaml", say=self.say)
         self.say("\nDone." if ok else "\nShipyard is installed but a check failed (above). Fix it and run `python3 -m shipyard doctor`.")
@@ -181,6 +185,7 @@ class Wizard:
             ("The agents", "Codex runs the Ops and Repo agents, sealed off from your secrets", self.agents),
             ("Shipyard", "rooms, Coolify, GitHub, then you", self.shipyard),
             ("Connectors", "Kubernetes and SigNoz, if you want them", self.optional_connectors),
+            ("Chat apps", "Discord, if you use it", self.chat_apps),
         ]
         for i, (title, why, fn) in enumerate(steps, 1):
             self.step(i, len(steps) + 1, title, why)

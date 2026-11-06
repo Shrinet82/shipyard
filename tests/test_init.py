@@ -225,7 +225,7 @@ def test_interactive_mode_asks_lists_rooms_and_hides_the_token(home):
         asked.append(q)
         return next(replies, "") or d
     a = {"switch": {"env_file": str(home / "switch/.env")}, "coolify": {"url": "http://cool:8000"}, "github": {"app_id": "", "create": "no"}, "agents": {"create": "no"}, "owner": ""}
-    inst = Installer(a, home, interactive=True, whoami_waiter=lambda db, start: None, ask=ask, secret=lambda q: secrets_.append(q) or "typed-token", say=lambda s: None, gateway=FakeGw, http=http_fake(),
+    inst = Installer(a, home, interactive=True, whoami_waiter=lambda db, start: None, login_maker=None, ask=ask, secret=lambda q: secrets_.append(q) or "typed-token", say=lambda s: None, gateway=FakeGw, http=http_fake(),
                      run=lambda *x, **k: SimpleNamespace(returncode=0, stdout="", stderr=""), github_check=lambda *x: "i", workdir=Path(__file__).parent.parent)
     os.environ.pop("COOLIFY_TOKEN", None)
     inst.install()

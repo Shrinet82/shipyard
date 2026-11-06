@@ -67,7 +67,7 @@ def test_a_machine_that_is_ready_is_not_touched(tmp_path):
     w = wizard(tmp_path, m)
     assert w.run() is True
     assert m.streamed == [] and m.installs == [] and m.doctors == 1
-    assert any("already installed" in s for s in w.said) and any("Step 7/7" in s for s in w.said)
+    assert any("already installed" in s for s in w.said) and any("Step 8/8" in s for s in w.said)
 
 
 def test_a_blank_machine_is_installed_in_order_and_signed_in_to_codex(tmp_path):
@@ -152,3 +152,15 @@ def test_signoz_falls_back_to_asking_for_a_key_when_the_automatic_key_fails(tmp_
     assert w.run() is True
     signoz_calls = [a for a in m.streamed if a[4:5] == ["signoz"]]
     assert ["--bootstrap" in a for a in signoz_calls] == [True, False] and any("Paste a Viewer key" in s for s in w.said)
+
+
+def test_discord_is_offered_after_the_connectors_and_runs_the_connect_command(tmp_path):
+    m = Machine()
+    w = wizard(tmp_path, m, replies=["1", "yes", "no", "yes"])           # Coolify, agents, no SigNoz, yes Discord
+    assert w.run() is True
+    calls = [a for a in m.streamed if a[1:4] == ["-m", "shipyard", "connect"]]
+    assert [a[4] for a in calls] == ["discord"] and "--config" in calls[0]
+    assert any("Chat apps" in s for s in w.said)
+    m2 = Machine()
+    assert wizard(tmp_path, m2, replies=["1", "yes", "no"]).run() is True        # the default is no
+    assert not [a for a in m2.streamed if a[4:5] == ["discord"]]

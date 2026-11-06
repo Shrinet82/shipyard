@@ -1,4 +1,4 @@
-# Connectors: GitHub, Kubernetes, SigNoz
+# Connectors: GitHub, Kubernetes, SigNoz, Discord
 
 Each one is a command you can run at any time. They all follow the same rules: your own credential is used once, Shipyard keeps only a least-privilege credential of its own (mode `0600`), `shipyard.yaml` is changed through a checked edit (a backup `shipyard.yaml.bak` is kept, and a change that would break the config is refused), and the Gatekeeper restarts when it is done.
 
@@ -62,3 +62,23 @@ Log lines are redacted, defused (no mentions, no code fences) and clipped like C
 SigNoz's `foundryctl` installer can run it on the same machine: `curl -fsSL https://signoz.io/foundry.sh | bash`, a `casting.yaml` with `flavor: compose, mode: docker`, then `foundryctl cast -f casting.yaml` (UI on port 8080, OTLP on 4317 and 4318). It needs about 4 GB of memory of its own.
 
 Not done: SigNoz traces and metrics queries, and creating alert rules from chat. The connector reads alerts, rules and logs.
+
+## Discord
+
+```bash
+python3 -m shipyard connect discord
+```
+
+Discord makes you do three things by hand, once; Shipyard checks each one before it goes on:
+
+1. **Create the bot.** [discord.com/developers/applications](https://discord.com/developers/applications) → New Application → Bot → Reset Token. Paste the token when asked (hidden). Shipyard asks Discord about it at once, so a wrong token is caught here.
+2. **Switch on two toggles** under Bot → Privileged Gateway Intents: *Message Content Intent* and *Server Members Intent*. Shipyard reads the application's flags from Discord and tells you which one is still off; without them the bot would receive empty messages.
+3. **Press the invite link** Shipyard prints (it carries the application id and exactly the permissions the bridge uses, never Administrator). Shipyard then waits until the bot appears in a server, so there is **no server id to copy**; with several servers it asks which.
+
+It then saves the token as `~/discord.env` (mode 0600), connects the server to Switch (a bridge named `<project> Discord`; run again and it reuses it), restarts the Gatekeeper, asks the room sync to make `#<project>-ops`, `-maintainers` and `-incidents` in Discord, and waits for you to type `@gatekeeper whoami` in Discord so it can add you as an owner there.
+
+Needs: an owner already set (type `@gatekeeper whoami` in Mattermost first, or run `python3 -m shipyard add-owner`), because the room sync is an owner action. Not tested here against a live Discord bot with this exact flow; the bridge call and the invite flow follow Switch's own Discord setup guide.
+
+## A Mattermost login
+
+The bundled Mattermost starts with only the admin account Switch uses. `python3 -m shipyard mattermost-user <name>` makes an ordinary user, adds them to the team and the project's rooms and shows the password once. The installer offers it before it waits for your first `@gatekeeper whoami`. The browser pages listen on the machine itself; see the tunnel line in the README.

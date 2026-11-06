@@ -249,6 +249,63 @@ def _connect(args: argparse.Namespace) -> None:
         _connect_kubernetes(args)
     elif args.what == "signoz":
         _connect_signoz(args)
+    elif args.what == "discord":
+        _connect_discord(args)
+
+
+def _owner_token(cfg: Config, project: str) -> str:
+    """A one-hour dashboard session for an owner, made on this machine like `dashboard-token`; empty when there is no owner yet."""
+    members = MemberStore(expand(cfg.dashboard.members_file), cfg.policy, None)
+    members.load()
+    owners = [i for i, r in cfg.policy.members.get(project, {}).items() if r.name == "OWNER"]
+    if not owners:
+        return ""
+    return DashAuth(sqlite3.connect(expand(cfg.db_path)), session_hours=cfg.dashboard.session_hours).issue(owners[0], project, 1.0)
+
+
+def _sync_rooms(cfg: Config, project: str) -> str:
+    """Ask the running Gatekeeper's room sync (owner only) to make the missing rooms, Discord's included. Returns what it said."""
+    import urllib.request
+    token = _owner_token(cfg, project)
+    if not token:
+        return "no owner yet, so the rooms were not made"
+    for _ in range(15):                                       # the Gatekeeper was just restarted
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{cfg.dashboard.port}/api/rooms/sync", method="POST", data=b"{}",
+                                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return "rooms synced: " + json.dumps(json.loads(r.read() or b"{}"))[:200]
+        except Exception:                                      # noqa: BLE001 - not up yet
+            time.sleep(2)
+    return "the Gatekeeper did not answer; type `@gatekeeper rooms sync` in a room"
+
+
+def _connect_discord(args: argparse.Namespace) -> None:
+    import getpass
+    from .confedit import ConfigEditError, edit_config
+    from .discordsetup import DiscordSetup, DiscordSetupError
+    cfg = load_config(args.config)
+    gateway = _gateway_factory(cfg)
+    if gateway is None:
+        raise SystemExit("Switch's admin login is not set up here (gateway_env_file in the config)")
+    project = args.project or next(iter(cfg.projects))
+
+    def ask(question: str, default: str = "") -> str:
+        return input(f"{question}" + (f" [{default}]" if default else "") + ": ").strip() or default
+    try:
+        out = DiscordSetup(Path(expand(args.config)).parent, gateway, ask=ask, secret=getpass.getpass).run(f"{project} Discord")
+        edit_config(args.config, lambda raw: raw.update({"discord": {**(raw.get("discord") or {}), "token_file": out["token_file"]}}))
+    except (DiscordSetupError, ConfigEditError, KeyboardInterrupt) as exc:
+        raise SystemExit(str(exc) or "stopped") from None
+    subprocess.run(["systemctl", "--user", "restart", "shipyard-gatekeeper"], check=False)
+    print("  making the rooms in Discord...")
+    print("  " + _sync_rooms(load_config(args.config), project))
+    print(f"\nIn Discord open #{project}-ops and type:  @gatekeeper whoami   (then I add you there as an owner)")
+    ns = argparse.Namespace(config=args.config, identity="", project=project, timeout=600.0)
+    try:
+        _add_owner(ns)
+    except SystemExit as exc:
+        print(f"  {exc}. Later: python3 -m shipyard add-owner")
 
 
 def _connect_signoz(args: argparse.Namespace) -> None:
@@ -363,6 +420,10 @@ def main() -> None:
     ins.add_argument("--answers", help="a YAML file of answers: no questions are asked (same as `init --answers`)")
     ins.add_argument("--home", default=os.path.expanduser("~"))
     ins.add_argument("--dry-run", action="store_true")
+    mu = sub.add_parser("mattermost-user", help="make a login in the bundled Mattermost and add it to the project's rooms (the password is shown once)")
+    mu.add_argument("username")
+    mu.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
+    mu.add_argument("--project", default=None)
     c = sub.add_parser("connect", help="connect Shipyard to a cluster or a tool")
     csub = c.add_subparsers(dest="what", required=True)
     ck = csub.add_parser("kubernetes", help="give Shipyard least-privilege access to a namespace of the cluster your kubectl points at")
@@ -374,6 +435,9 @@ def main() -> None:
     ck.add_argument("--kubeconfig-dir", default=os.path.expanduser("~/kube"))
     ck.add_argument("--yes", action="store_true", help="do not ask to confirm")
     ck.add_argument("--dry-run", action="store_true", help="print what would be created in the cluster and change nothing")
+    cd = csub.add_parser("discord", help="add Discord as a chat app: bot token, the two switches, the invite, Switch's bridge, then the rooms")
+    cd.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
+    cd.add_argument("--project", default=None)
     cs = csub.add_parser("signoz", help="read SigNoz's alerts and logs (read only) and receive its alerts")
     cs.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
     cs.add_argument("--url", default="", help="SigNoz address, for example http://localhost:8080")
@@ -412,6 +476,14 @@ def main() -> None:
         _init(args)
     elif args.cmd == "doctor":
         raise SystemExit(0 if doctor(Path(args.config)) else 1)
+    elif args.cmd == "mattermost-user":
+        from .mmuser import MattermostError, create_user
+        cfg = load_config(args.config)
+        try:
+            made = create_user(read_env(expand(cfg.gateway_env_file)), args.project or next(iter(cfg.projects)), args.username)
+        except MattermostError as exc:
+            raise SystemExit(str(exc)) from None
+        print(f"username {made['username']}  password {made['password']}   (shown once)\nrooms: {', '.join(made['rooms'])}")
     elif args.cmd == "connect":
         _connect(args)
     elif args.cmd == "github-app":

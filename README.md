@@ -83,9 +83,13 @@ It installs Python and git, clones this repository to `~/shipyard`, and starts t
 | Shipyard | lists your rooms to pick; registers the Gatekeeper; writes the config; starts it | the **Coolify token** (it names the page to create it and checks it at once) |
 | GitHub | **creates the GitHub App from a manifest**: you press *Create GitHub App*, then *Install* on your repository. The keys are saved for you | two clicks |
 | Connectors | **Kubernetes**: `connect kubernetes` lists your namespaces and deployments, creates least-privilege accounts and kubeconfigs, and proves each credential. **SigNoz**: `connect signoz` | pick a namespace; paste a read-only SigNoz key |
+| Your login | the bundled Mattermost starts with no ordinary user, so it offers to **make you one** and puts you in the project's rooms (the password is shown once) | pick a username, save the password |
 | You | waits for you to type `@gatekeeper whoami` in any room, asks "is this you?", and makes you the owner | type one message |
+| Discord (optional) | **checks the bot token, which privileged switches are on, finds the server the bot joined**, connects it to Switch, makes the rooms and adds you as owner there | create the bot at the Developer Portal, switch on two toggles, press the invite link |
 
 Unattended: `python3 -m shipyard install --answers answers.yaml` asks nothing (see [`docs/answers.example.yaml`](docs/answers.example.yaml)); `--dry-run` checks every credential and prints the config without writing a file.
+
+The browser pages of the bundled Mattermost (8065), Switch Console (8000) and the Shipyard dashboard (8780) listen on the machine itself, by design. From your own computer reach them with an SSH tunnel: `ssh -L 8065:localhost:8065 -L 8780:localhost:8780 <the machine>`, then open `http://localhost:8065`.
 
 Each connector also works on its own, after the install:
 
@@ -93,6 +97,8 @@ Each connector also works on its own, after the install:
 python3 -m shipyard github-app --repo owner/name        # the two-click GitHub App (--org for an organisation)
 python3 -m shipyard connect kubernetes                  # pick a namespace; --dry-run shows what it would create
 python3 -m shipyard connect signoz --url http://signoz:8080
+python3 -m shipyard connect discord                     # bot token, switches, invite, bridge, rooms
+python3 -m shipyard mattermost-user anya                # a login in the bundled Mattermost (password shown once)
 python3 -m shipyard doctor                              # what is wrong, if anything
 ```
 
@@ -110,7 +116,7 @@ What each connector does, what it needs and how to remove it: [`docs/CONNECTORS.
 - *First deploy and the SBOM gate*: the first release of an app has no baseline, so every critical vulnerability counts as new and the deploy is blocked. An owner overrides it once (`@gatekeeper approve <id>`); that release becomes the baseline, and later releases are compared with it. A maintainer cannot override.
 - *Reboots*: `install-switch.sh` adds a `switch-stack` systemd unit (the compose file has no restart policy), `install-controller.sh` a `switch-agents` unit, and `init` enables lingering for the Gatekeeper's user service; after a reboot everything comes back by itself. Coolify's containers restart on their own.
 
-**Discord**: in Switch Console (`ssh -L 8000:localhost:8000 <the Switch machine>`, then http://localhost:8000), add the Discord app with your bot token, then press **Sync rooms** on the Shipyard dashboard's *Switch rooms* page: it makes the missing rooms and desk rooms in Discord. To let it notice channels deleted in Discord (Switch does not), set `discord: {token_file: ~/discord.env}` in `shipyard.yaml` (a file with `DISCORD_BOT_TOKEN=`; read only).
+**Discord**: the installer offers it as a step; later, `python3 -m shipyard connect discord`. See [`docs/CONNECTORS.md`](docs/CONNECTORS.md). To let the room sync notice channels deleted in Discord, set `discord: {token_file: ~/discord.env}` in `shipyard.yaml` (the step does this).
 
 **Adding a room later** (for example an incidents room): add its id under `rooms:` in `shipyard.yaml` (`incidents:` for alerts), restart the Gatekeeper, then press **Sync from roles** on the dashboard's *Agent access* page. Until you do, Switch tells the Gatekeeper it may not address the agents in the new room, so the Ops Agent never wakes there. With an incidents room, an alert goes to it and to the ops rooms; the Ops Agent is asked once, in the incidents room.
 
