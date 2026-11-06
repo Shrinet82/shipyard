@@ -274,6 +274,8 @@ class Service:
 
     def _status(self, project: Project, room: str, sender: str, cmd: Command) -> str:
         targets = list(cmd.args) or project.app_names
+        if not targets:
+            return "No applications are connected to this project yet. An owner connects one with `python3 -m shipyard connect kubernetes` or by adding a Coolify application."
         lines = []
         for target in targets:
             backend = project.backend_of(target)

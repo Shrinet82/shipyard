@@ -420,3 +420,26 @@ def test_hostshell_surfaces_remote_refusals():
     sh = HostShell({"prod": {"ssh": "u@h", "key_file": "/k"}}, runner=lambda a, t: (255, "", "Permission denied (publickey)."))
     with pytest.raises(ShellError, match="Permission denied"):
         sh.run("prod", ["df"])
+
+
+def test_status_with_no_applications_says_so_instead_of_staying_silent(tmp_path):
+    from test_repo import OWNER, OPS
+    import sqlite3, textwrap
+    from shipyard.config import load_config
+    from shipyard.gatekeeper import Gatekeeper
+    from shipyard.service import Service
+    f = tmp_path / "c.yaml"
+    f.write_text(textwrap.dedent(f"""
+        projects:
+          demo:
+            rooms: {{ops: [{OPS}], maintainers: [m]}}
+            apps: {{}}
+            members: {{"{OWNER}": owner}}
+        actions: {{coolify.status: read}}
+    """))
+    cfg = load_config(f)
+    posts = []
+    svc = Service(cfg, Gatekeeper(cfg.policy, sqlite3.connect(":memory:", check_same_thread=False)), None, lambda r, t: posts.append(t))
+    svc.handle_event({"type": "message", "room_id": OPS, "payload": {"message_id": "m1", "sender": OWNER, "sender_name": "o", "sender_kind": None,
+                                                                    "body": "@gatekeeper status", "addressed": True}})
+    assert "No applications are connected" in posts[-1]
