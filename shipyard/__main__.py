@@ -217,6 +217,19 @@ def _add_owner(args) -> None:
     project = args.project or next(iter(cfg.projects))
     store = MemberStore(expand(cfg.dashboard.members_file), cfg.policy, None)
     store.load()
+    if not args.identity:
+        from .claim import last_whoami_id, pretty, wait_for_whoami
+        db = expand(cfg.db_path)
+        print("In any Shipyard room type:  @gatekeeper whoami   (waiting, Ctrl-C to stop)")
+        try:
+            seen = wait_for_whoami(db, last_whoami_id(db), timeout=args.timeout)
+        except KeyboardInterrupt:
+            raise SystemExit("stopped") from None
+        if seen is None:
+            raise SystemExit("nobody typed `@gatekeeper whoami` in time")
+        args.identity = seen[1]
+        if input(f"Saw `whoami` from {pretty(args.identity)}. Make them an owner of {project}? (yes/no) [yes]: ").strip().lower() not in ("", "y", "yes"):
+            raise SystemExit("not added")
     try:
         store.add_owner(project, args.identity)
     except MemberError as exc:
@@ -351,7 +364,8 @@ def main() -> None:
     d.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
     o = sub.add_parser("add-owner", help="make a person the owner of a project (run once on a new install, on the machine)")
     o.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
-    o.add_argument("--identity", required=True, help="the id that `@gatekeeper whoami` printed")
+    o.add_argument("--identity", default="", help="the id that `@gatekeeper whoami` printed; leave out to wait for someone to type it")
+    o.add_argument("--timeout", type=float, default=600.0, help="seconds to wait for a `whoami` when no --identity is given")
     o.add_argument("--project", default=None)
     args = ap.parse_args()
     if args.cmd == "install":
