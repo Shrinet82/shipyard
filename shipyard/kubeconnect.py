@@ -174,8 +174,10 @@ class KubeConnect:
 
     def verify(self, files: dict[str, str], namespace: str) -> None:
         """Prove each credential does what it should and no more, with the credentials themselves."""
-        def can(role: str, *args: str) -> bool:
-            rc, out, _ = self._run([self.kubectl, "--kubeconfig", files[role], "-n", namespace, "auth", "can-i", *args], None)
+        def can(role: str, verb: str, resource: str) -> bool:
+            res, _, sub = resource.partition("/")                        # `pods/exec` is resource pods, subresource exec
+            argv = [self.kubectl, "--kubeconfig", files[role], "-n", namespace, "auth", "can-i", verb, res, *([f"--subresource={sub}"] if sub else [])]
+            rc, out, _ = self._run(argv, None)
             return rc == 0 and out.strip() == "yes"
         checks = [("viewer", ("get", "pods"), True), ("viewer", ("get", "secrets"), False), ("viewer", ("create", "pods/exec"), False),
                   ("deployer", ("patch", "deployments"), True), ("deployer", ("delete", "deployments"), False), ("deployer", ("get", "secrets"), False),

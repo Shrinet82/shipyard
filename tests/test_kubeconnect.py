@@ -27,7 +27,11 @@ class FakeCluster:
         if "--kubeconfig" in a:                                     # a Shipyard credential, not the admin
             cfg = a[a.index("--kubeconfig") + 1]
             role = os.path.basename(cfg).split(".")[0]
-            verb, res = a[-2], a[-1]
+            i = a.index("can-i")
+            verb, res = a[i + 1], a[i + 2]
+            sub = [x.split("=", 1)[1] for x in a if x.startswith("--subresource=")]
+            if sub:
+                res += "/" + sub[0]                                                # as kubectl wants it: `pods` with --subresource=exec
             return 0, ("yes" if self.can.get((role, verb, res), False) else "no"), ""
         if a[1:3] == ["auth", "can-i"]:
             return (0, "yes", "") if self.admin else (1, "no", "")
@@ -90,6 +94,8 @@ def test_connect_applies_writes_private_kubeconfigs_and_proves_each_credential(t
         assert cfg["users"][0]["user"]["token"] == f"token-{role}" and cfg["clusters"][0]["cluster"]["certificate-authority-data"] == CA
         assert cfg["contexts"][0]["context"]["namespace"] == "shop"
     assert oct((tmp_path / "kube").stat().st_mode & 0o777) == "0o700"
+    probes = [a for a in c.calls if "can-i" in a and "--kubeconfig" in a]
+    assert any("--subresource=exec" in a for a in probes) and not any("pods/exec" in a for a in probes)        # `pods/exec` would be read as a pod NAME
 
 
 def test_connect_fails_if_a_credential_can_do_too_much_or_too_little(tmp_path):
