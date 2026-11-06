@@ -82,12 +82,13 @@ class Installer:
                  http: Callable[..., tuple[int, Any]] = _http, run: Callable[..., Any] | None = None,
                  github_check: Callable[[str, str, str], str] | None = None, python: str = sys.executable, workdir: Path = REPO_DIR,
                  app_creator: Callable[..., dict[str, Any]] | None = None, whoami_waiter: Callable[[str, int], Any] | None = None,
-                 login_maker: Callable[[str, str], dict[str, Any]] | None | bool = False):
+                 login_maker: Callable[[str, str], dict[str, Any]] | None | bool = False, exposer: Any = False):
         self.a, self.home, self.interactive = answers, home, interactive
         self._ask, self._secret, self.say, self.gateway, self.http = ask or self._input, secret or getpass.getpass, say, gateway, http
         self.run = run or (lambda argv, **kw: subprocess.run(argv, capture_output=True, text=True, timeout=60, **kw))
         self.github_check, self.python, self.workdir = github_check or self._github_check, python, workdir
         self.app_creator = app_creator or self._create_app
+        self.exposer = self._make_exposer() if exposer is False else exposer                    # None switches the offer off (tests, unattended runs)
         self.login_maker = self._make_login if login_maker is False else login_maker      # None switches the offer off (tests, unattended runs)
         from .claim import wait_for_whoami
         self.whoami_waiter = whoami_waiter or wait_for_whoami
@@ -514,12 +515,33 @@ class Installer:
             self.claim_owner(project)
         return cfg
 
+    def _make_exposer(self) -> Any:
+        from .expose import Exposer
+        return Exposer(self.home, say=self.say)
+
+    def offer_exposure(self) -> str:
+        """Make the web pages reachable from a browser without an SSH tunnel. Asked once; the tunnel keeps working either way. Returns the address, or ''."""
+        if self.exposer is None:
+            return ""
+        from .expose import ExposeError
+        cloud = self.exposer.cloud()
+        self.say("  Mattermost, Switch Console and the dashboard listen on this machine only. They can listen on its network address instead, so you open them in a")
+        self.say("  browser without an SSH tunnel (the tunnel still works). You then allow their ports for YOUR address only in your cloud firewall.")
+        default = "yes" if cloud else "no"             # a cloud firewall blocks everything until you allow it; elsewhere, make it a conscious yes
+        if self._ask("  Open them for your browser without a tunnel? (yes/no)", default).lower() not in ("yes", "y"):
+            return ""
+        try:
+            return self.exposer.enable(config=self.paths["config"])["host"]
+        except ExposeError as exc:
+            self.say(f"  could not do it: {exc}. The tunnel works; try `python3 -m shipyard expose` later.")
+            return ""
+
     def _make_login(self, project: str, username: str) -> dict[str, Any]:
         from .mmuser import create_user
         env = read_env(self.get("switch.env_file", "", str(self.home / "switch/.env")))
         return create_user(env, project, username)
 
-    def offer_mattermost_login(self, project: str) -> None:
+    def offer_mattermost_login(self, project: str, host: str = "") -> None:
         """The bundled Mattermost starts with no ordinary user. Offer to make one, show the password once."""
         if self.login_maker is None:
             return
@@ -532,14 +554,16 @@ class Installer:
             self.say(f"  could not create it: {exc}")
             return
         self.say(f"  Mattermost login created: username {made['username']}, password {made['password']}  (shown once: save it)")
-        self.say(f"  Sign in at http://localhost:8065 (from your own computer: ssh -L 8065:localhost:8065 <this machine>), room {', '.join(made['rooms'])}.")
+        where = f"http://{host}:8065" if host else "http://localhost:8065 (from your own computer: ssh -L 8065:localhost:8065 <this machine>)"
+        self.say(f"  Sign in at {where}, room {', '.join(made['rooms'])}.")
 
     def claim_owner(self, project: str) -> None:
         """No owner yet: wait for the person to type `@gatekeeper whoami`, confirm it is them, make them the owner."""
         from .claim import last_whoami_id, pretty, wait_for_whoami
         db_path = str(self.home / "shipyard.db")
         start = last_whoami_id(db_path)
-        self.offer_mattermost_login(project)
+        host = self.offer_exposure()
+        self.offer_mattermost_login(project, host)
         self.say("  Last step: make yourself the owner. In any Shipyard room (Mattermost or Discord) type:  @gatekeeper whoami")
         self.say("  I am waiting for it (Ctrl-C to skip; `python3 -m shipyard add-owner` does the same later).")
         try:

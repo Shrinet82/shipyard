@@ -14,8 +14,10 @@ if [ ! -f .env ]; then
   # agent_management refuses to start without this signing secret, and .env.example ships it empty
   sed -i "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 24)|" .env
 fi
+# `shipyard expose` rewrites this file to make the web pages reachable without a tunnel; empty means nothing is exposed
+[ -f shipyard-expose.yml ] || printf '# Written by shipyard expose.\nservices: {}\n' > shipyard-expose.yml
 # --env-file matters: compose reads .env from the compose file's folder, not from here
-sudo docker compose --env-file .env -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway up -d
+sudo docker compose --env-file .env -f deploy/local/standalone-docker-compose.yml -f shipyard-expose.yml --profile collab --profile gateway up -d
 # the compose file gives the containers no restart policy, so after a reboot Switch would stay down: start it from systemd
 sudo tee /etc/systemd/system/switch-stack.service >/dev/null <<UNIT
 [Unit]
@@ -27,8 +29,8 @@ After=docker.service network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$HOME/switch
-ExecStart=/usr/bin/docker compose --env-file .env -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway up -d
-ExecStop=/usr/bin/docker compose --env-file .env -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway stop
+ExecStart=/usr/bin/docker compose --env-file .env -f deploy/local/standalone-docker-compose.yml -f shipyard-expose.yml --profile collab --profile gateway up -d
+ExecStop=/usr/bin/docker compose --env-file .env -f deploy/local/standalone-docker-compose.yml -f shipyard-expose.yml --profile collab --profile gateway stop
 
 [Install]
 WantedBy=multi-user.target

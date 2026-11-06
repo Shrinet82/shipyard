@@ -423,6 +423,11 @@ def main() -> None:
     ins.add_argument("--answers", help="a YAML file of answers: no questions are asked (same as `init --answers`)")
     ins.add_argument("--home", default=os.path.expanduser("~"))
     ins.add_argument("--dry-run", action="store_true")
+    ex = sub.add_parser("expose", help="make Mattermost, Switch Console and the dashboard reachable from your browser without an SSH tunnel (--off undoes it)")
+    ex.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
+    ex.add_argument("--host", default="", help="this machine's public address (found automatically on AWS)")
+    ex.add_argument("--only", default="", help="comma-separated subset of: mattermost, console, dashboard")
+    ex.add_argument("--off", action="store_true", help="listen on this machine only again")
     mu = sub.add_parser("mattermost-user", help="make a login in the bundled Mattermost and add it to the project's rooms (the password is shown once)")
     mu.add_argument("username")
     mu.add_argument("--config", default=os.path.expanduser("~/shipyard.yaml"))
@@ -479,6 +484,16 @@ def main() -> None:
         _init(args)
     elif args.cmd == "doctor":
         raise SystemExit(0 if doctor(Path(args.config)) else 1)
+    elif args.cmd == "expose":
+        from .expose import Exposer, ExposeError, PARTS
+        ex = Exposer(Path.home())
+        try:
+            if args.off:
+                ex.disable(Path(expand(args.config)))
+            else:
+                ex.enable(args.host, tuple(p.strip() for p in args.only.split(",") if p.strip()) or PARTS, Path(expand(args.config)))
+        except ExposeError as exc:
+            raise SystemExit(str(exc)) from None
     elif args.cmd == "mattermost-user":
         from .mmuser import MattermostError, create_user
         cfg = load_config(args.config)

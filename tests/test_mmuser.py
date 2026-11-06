@@ -59,7 +59,7 @@ def test_the_installer_offers_a_login_and_shows_the_password_once(home):
     said = []
     inst = Installer(answers(home, owner=""), home, interactive=True, ask=lambda q, d: "ravi" if q.startswith("  Choose a username") else d, secret=lambda q: "x", say=said.append,
                      gateway=FakeGw, http=http_fake(), whoami_waiter=lambda *a: None,
-                     login_maker=lambda project, name: {"username": name, "password": "secret-pw", "rooms": [f"{project}-ops"], "team": "switch"},
+                     exposer=None, login_maker=lambda project, name: {"username": name, "password": "secret-pw", "rooms": [f"{project}-ops"], "team": "switch"},
                      run=lambda *x, **k: SimpleNamespace(returncode=0, stdout="active", stderr=""), github_check=lambda *a: "i", workdir=Path(__file__).parent.parent)
     inst.install()
     text = "\n".join(said)
