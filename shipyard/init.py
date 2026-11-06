@@ -475,14 +475,14 @@ class Installer:
         db_path = str(self.home / "shipyard.db")
         start = last_whoami_id(db_path)
         self.say("  Last step: make yourself the owner. In any Shipyard room (Mattermost or Discord) type:  @gatekeeper whoami")
-        self.say("  I am waiting for it (Ctrl-C to skip and use `python3 -m shipyard add-owner` later).")
+        self.say("  I am waiting for it (Ctrl-C to skip; `python3 -m shipyard add-owner` does the same later).")
         try:
             seen = self.whoami_waiter(db_path, start)
         except KeyboardInterrupt:
             self.say("  skipped")
             return
         if seen is None:
-            self.say("  Nothing arrived in 10 minutes. Run `@gatekeeper whoami`, then `python3 -m shipyard add-owner --identity '<that id>'`.")
+            self.say("  Nothing arrived in 10 minutes. Run `python3 -m shipyard add-owner` and type `@gatekeeper whoami`.")
             return
         _, identity = seen
         if self._ask(f"  Saw `whoami` from {pretty(identity)}. Make them the owner of {project}? (yes/no)", "yes").lower() not in ("yes", "y"):
@@ -518,7 +518,7 @@ def doctor(config_path: Path, say: Callable[[str], None] = print, http: Callable
     for name, p in cfg.projects.items():
         line(bool(p.rooms), f"project {name}: {len(p.ops_rooms)} ops room(s), {len(p.maintainer_rooms)} maintainers room(s), {len(cfg.policy.members.get(name, {}))} member(s)")
         if not cfg.policy.members.get(name):
-            say("       no owner yet: type `@gatekeeper whoami` in a room, then run `python3 -m shipyard add-owner --identity <the id it prints>`")
+            say("       no owner yet: run `python3 -m shipyard add-owner`, then type `@gatekeeper whoami` in a room (or pass --identity <the id it prints>)")
     try:
         env = read_env(cfg.gateway_env_file)
         gateway(cfg.switch_url, env["GATEWAY_ADMIN_EMAIL"], env["GATEWAY_ADMIN_PASSWORD"])
