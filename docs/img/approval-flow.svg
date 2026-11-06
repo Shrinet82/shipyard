@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 340" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">
+<title id="t">What happens between a request and the change</title>
+<desc id="d">A request in chat passes a role check, the SBOM gate, a second person's approval, runs with a scoped credential, and is written to the hash-chained audit log. Each step can refuse.</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker></defs>
+<rect width="1100" height="340" rx="16" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="30" y="42" font-size="20" font-weight="700" fill="#0f172a">From a chat message to a change</text>
+<text x="30" y="64" font-size="13" fill="#64748b">Every step can say no, and every answer is written down.</text>
+<g font-size="14" fill="#0f172a">
+<rect x="30" y="96" width="150" height="110" rx="12" fill="#f1f5f9" stroke="#cbd5e1"/>
+<circle cx="56" cy="122" r="12" fill="#0f172a"/><text x="52" y="127" font-size="13" fill="#fff" font-weight="700">1</text>
+<text x="76" y="127" font-weight="700">Ask</text>
+<text x="46" y="154" font-size="12" fill="#475569">@gatekeeper</text><text x="46" y="172" font-size="12" fill="#475569">deploy demo-web</text><text x="46" y="190" font-size="12" fill="#64748b">in a room, as text</text>
+
+<rect x="208" y="96" width="150" height="110" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+<circle cx="234" cy="122" r="12" fill="#1d4ed8"/><text x="230" y="127" font-size="13" fill="#fff" font-weight="700">2</text>
+<text x="254" y="127" font-weight="700">Who are you?</text>
+<text x="224" y="154" font-size="12" fill="#475569">Switch names the</text><text x="224" y="172" font-size="12" fill="#475569">sender's account;</text><text x="224" y="190" font-size="12" fill="#475569">your role is looked up</text>
+
+<rect x="386" y="96" width="150" height="110" rx="12" fill="#fef2f2" stroke="#fca5a5"/>
+<circle cx="412" cy="122" r="12" fill="#b91c1c"/><text x="408" y="127" font-size="13" fill="#fff" font-weight="700">3</text>
+<text x="432" y="127" font-weight="700">SBOM gate</text>
+<text x="402" y="154" font-size="12" fill="#475569">A new critical CVE</text><text x="402" y="172" font-size="12" fill="#475569">blocks the deploy;</text><text x="402" y="190" font-size="12" fill="#475569">only an owner overrides</text>
+
+<rect x="564" y="96" width="150" height="110" rx="12" fill="#fffbeb" stroke="#fcd34d"/>
+<circle cx="590" cy="122" r="12" fill="#b45309"/><text x="586" y="127" font-size="13" fill="#fff" font-weight="700">4</text>
+<text x="610" y="127" font-weight="700">Approve</text>
+<text x="580" y="154" font-size="12" fill="#475569">A second person,</text><text x="580" y="172" font-size="12" fill="#475569">once, within 10 min,</text><text x="580" y="190" font-size="12" fill="#475569">for this exact commit</text>
+
+<rect x="742" y="96" width="150" height="110" rx="12" fill="#f0fdf4" stroke="#86efac"/>
+<circle cx="768" cy="122" r="12" fill="#15803d"/><text x="764" y="127" font-size="13" fill="#fff" font-weight="700">5</text>
+<text x="788" y="127" font-weight="700">Run</text>
+<text x="758" y="154" font-size="12" fill="#475569">The Gatekeeper acts</text><text x="758" y="172" font-size="12" fill="#475569">with the smallest</text><text x="758" y="190" font-size="12" fill="#475569">credential that works</text>
+
+<rect x="920" y="96" width="150" height="110" rx="12" fill="#faf5ff" stroke="#d8b4fe"/>
+<circle cx="946" cy="122" r="12" fill="#7e22ce"/><text x="942" y="127" font-size="13" fill="#fff" font-weight="700">6</text>
+<text x="966" y="127" font-weight="700">Remember</text>
+<text x="936" y="154" font-size="12" fill="#475569">A hash-chained</text><text x="936" y="172" font-size="12" fill="#475569">audit row. An edited</text><text x="936" y="190" font-size="12" fill="#475569">row breaks the chain</text>
+</g>
+<g stroke="#475569" stroke-width="1.8" fill="none" marker-end="url(#a)">
+<path d="M182 151 H206"/><path d="M360 151 H384"/><path d="M538 151 H562"/><path d="M716 151 H740"/><path d="M894 151 H918"/>
+</g>
+<g font-size="12">
+<text x="30" y="250" font-weight="700" fill="#0f172a">What a refusal looks like, word for word</text>
+<rect x="30" y="262" width="320" height="52" rx="8" fill="#f8fafc" stroke="#e2e8f0"/><text x="44" y="283" fill="#b91c1c" font-weight="700">Denied</text><text x="44" y="302" fill="#475569">k8s.restart needs role deployer or above.</text>
+<rect x="390" y="262" width="320" height="52" rx="8" fill="#f8fafc" stroke="#e2e8f0"/><text x="404" y="283" fill="#b91c1c" font-weight="700">BLOCKED by the SBOM gate</text><text x="404" y="302" fill="#475569">6 new critical CVEs. Only an owner can override.</text>
+<rect x="750" y="262" width="320" height="52" rx="8" fill="#f8fafc" stroke="#e2e8f0"/><text x="764" y="283" fill="#b91c1c" font-weight="700">Denied</text><text x="764" y="302" fill="#475569">unknown or already used approval.</text>
+</g>
+</svg>

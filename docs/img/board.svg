@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 470" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">
+<title id="t">The Board: tickets that open and close themselves</title>
+<desc id="d">Tickets come from chat, failed deploys and alerts, pull requests that say Fixes SY-n, and the SBOM gate. They move across todo, doing, review and done, and come back out as morning briefings in personal rooms, a daily standup, incident follow-ups and the dashboard.</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker></defs>
+<rect width="1100" height="470" rx="16" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="30" y="42" font-size="20" font-weight="700" fill="#0f172a">A project board that runs inside the chat</text>
+<text x="30" y="64" font-size="13" fill="#64748b">Tickets open themselves from what happens, move on their own, and come back to each person as a briefing.</text>
+
+<text x="30" y="100" font-size="12" font-weight="700" fill="#64748b" letter-spacing="1">WHERE TICKETS COME FROM</text>
+<g font-size="13" fill="#0f172a">
+<rect x="30" y="114" width="250" height="62" rx="10" fill="#f1f5f9" stroke="#cbd5e1"/><text x="46" y="138" font-weight="700">Chat</text><text x="46" y="158" font-size="12" fill="#475569">@repo-agent track: fix login loop, high</text>
+<rect x="30" y="186" width="250" height="62" rx="10" fill="#fef2f2" stroke="#fecaca"/><text x="46" y="210" font-weight="700">Alerts</text><text x="46" y="230" font-size="12" fill="#475569">failed deploy · crash · disk · SigNoz</text>
+<rect x="30" y="258" width="250" height="62" rx="10" fill="#eff6ff" stroke="#bfdbfe"/><text x="46" y="282" font-weight="700">Pull requests</text><text x="46" y="302" font-size="12" fill="#475569">"Fixes SY-12" links it and moves it</text>
+<rect x="30" y="330" width="250" height="62" rx="10" fill="#fffbeb" stroke="#fde68a"/><text x="46" y="354" font-weight="700">SBOM gate</text><text x="46" y="374" font-size="12" fill="#475569">one ticket per new critical CVE</text>
+</g>
+
+<rect x="330" y="100" width="470" height="300" rx="14" fill="#f8fafc" stroke="#cbd5e1"/>
+<text x="350" y="128" font-size="15" font-weight="700" fill="#0f172a">Board</text>
+<g font-size="11" font-weight="700" fill="#64748b" letter-spacing="1">
+<text x="350" y="156">TO DO</text><text x="470" y="156">DOING</text><text x="590" y="156">REVIEW</text><text x="710" y="156">DONE</text></g>
+<g font-size="12" fill="#0f172a">
+<rect x="346" y="166" width="108" height="64" rx="8" fill="#fff" stroke="#e2e8f0"/><text x="356" y="186" font-weight="700">SY-9</text><text x="356" y="204" fill="#475569">Check docs links</text><text x="356" y="220" font-size="11" fill="#94a3b8">low · viewer</text>
+<rect x="346" y="240" width="108" height="64" rx="8" fill="#fff" stroke="#fecaca"/><text x="356" y="260" font-weight="700">SY-1</text><text x="356" y="278" fill="#475569">SigNoz: errors</text><text x="356" y="294" font-size="11" fill="#b91c1c">alert · incident</text>
+<rect x="466" y="166" width="108" height="64" rx="8" fill="#fff" stroke="#e2e8f0"/><text x="476" y="186" font-weight="700">SY-7</text><text x="476" y="204" fill="#475569">Login redirect</text><text x="476" y="220" font-size="11" fill="#94a3b8">high · deployer</text>
+<rect x="586" y="166" width="108" height="64" rx="8" fill="#fff" stroke="#bfdbfe"/><text x="596" y="186" font-weight="700">SY-8</text><text x="596" y="204" fill="#475569">README badges</text><text x="596" y="220" font-size="11" fill="#1d4ed8">PR #14 · CI green</text>
+<rect x="706" y="166" width="108" height="64" rx="8" fill="#fff" stroke="#bbf7d0"/><text x="716" y="186" font-weight="700">SY-5</text><text x="716" y="204" fill="#475569">Merge path test</text><text x="716" y="220" font-size="11" fill="#15803d">deployed ✓</text>
+</g>
+<text x="350" y="334" font-size="12" fill="#475569">A pull request that says "Fixes SY-8" moves it to review.</text>
+<text x="350" y="354" font-size="12" fill="#475569">Merging it and a successful deploy of that exact commit</text>
+<text x="350" y="374" font-size="12" fill="#475569">move it to done. Nobody drags a card.</text>
+
+<text x="850" y="100" font-size="12" font-weight="700" fill="#64748b" letter-spacing="1">WHAT COMES BACK OUT</text>
+<g font-size="13" fill="#0f172a">
+<rect x="850" y="114" width="220" height="62" rx="10" fill="#f0fdf4" stroke="#bbf7d0"/><text x="866" y="138" font-weight="700">Morning briefing</text><text x="866" y="158" font-size="12" fill="#475569">in your own desk room</text>
+<rect x="850" y="186" width="220" height="62" rx="10" fill="#f0fdf4" stroke="#bbf7d0"/><text x="866" y="210" font-weight="700">Daily standup</text><text x="866" y="230" font-size="12" fill="#475569">who is stuck, what is stale</text>
+<rect x="850" y="258" width="220" height="62" rx="10" fill="#f0fdf4" stroke="#bbf7d0"/><text x="866" y="282" font-weight="700">Incident follow-ups</text><text x="866" y="302" font-size="12" fill="#475569">closing INC-3 makes the tickets</text>
+<rect x="850" y="330" width="220" height="62" rx="10" fill="#f0fdf4" stroke="#bbf7d0"/><text x="866" y="354" font-weight="700">Dashboard board</text><text x="866" y="374" font-size="12" fill="#475569">filters, drag, ticket pages</text>
+</g>
+<g stroke="#475569" stroke-width="1.8" fill="none" marker-end="url(#a)">
+<path d="M282 145 H328"/><path d="M282 217 H328"/><path d="M282 289 H328"/><path d="M282 361 H328"/>
+<path d="M802 145 H848"/><path d="M802 217 H848"/><path d="M802 289 H848"/><path d="M802 361 H848"/>
+</g>
+<text x="30" y="434" font-size="12" fill="#475569">Who may do what follows the same roles as everything else: a viewer can't assign, a deployer moves their own tickets, a maintainer moves any.</text>
+<text x="30" y="452" font-size="12" fill="#475569">Ticket text is treated as data, never as instructions; deleting one needs a second person.</text>
+</svg>

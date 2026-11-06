@@ -1,28 +1,73 @@
-# Shipyard
+<p align="center"><img src="docs/img/banner.svg" alt="Shipyard: a chat room that ships software, and can't be talked into doing anything it shouldn't" width="100%"></p>
 
-**A chat room that ships software, and can't be talked into doing anything it shouldn't.**
-
-Shipyard turns a Discord, Slack or Mattermost channel into an ops room for a small team. People ask for deploys, rollbacks, logs, pull-request status and merges in plain chat. Two AI agents (an Ops Agent and a Repo Agent) answer and diagnose. Every change goes through one small program, the **Gatekeeper**, which checks who is asking, asks a second person for approval when it matters, blocks deploys that bring in a new critical vulnerability, and writes an audit log nobody can quietly edit.
+<p align="center">
+<a href="#install-in-ten-minutes"><b>Install</b></a> ·
+<a href="docs/SETUP-GUIDES.md"><b>Setup guides</b></a> ·
+<a href="#see-it-working"><b>Screenshots</b></a> ·
+<a href="#demo-video"><b>Demo video</b></a> ·
+<a href="docs/SECURITY.md"><b>Security</b></a> ·
+<a href="docs/INSTALL.md"><b>Full install guide</b></a>
+</p>
 
 Built for the [Flip the Switch hackathon](https://www.wemakedevs.org/hackathons/switch) (WeMakeDevs × DevTools Academy × Switch), Track 2, also entered in Track 1.
 
-![Shipyard architecture](docs/architecture.svg)
+## What is Shipyard?
 
-## In 30 seconds
+Small teams run their work in chat and their infrastructure in five other places: a deploy tool, a cluster, GitHub, a monitoring dashboard and a ticket tracker. Shipyard puts all of it in the chat room your team already uses (Discord, Mattermost, Slack), and puts **one small program in front of it** so that handing a chat room the keys is safe.
 
-- **Ask in chat, get it done safely.** Deploy, roll back, scale, read logs, run read-only commands in a pod or container, merge a pull request. Roles decide who may; approvals are single use and pinned to the exact action and commit.
-- **The agents can't act.** They hold no credentials. They read, diagnose and *ask the Gatekeeper*, which acts only for a person with a role. Fooling an agent gets an attacker a request that waits for a human.
-- **A security gate in the path.** Every CI run produces an SBOM and a vulnerability scan; a new critical CVE blocks the deploy until an owner overrides it. The first thing that happens when something breaks is evidence, not a guess.
-- **Plug in what you already run.** Coolify or Kubernetes to deploy, GitHub for code and CI, SigNoz for logs and alerts, Mattermost or Discord for chat. Each connects with one command, and the installer walks you through it.
+| | |
+|---|---|
+| **Run it** | Ask in plain words: deploy, roll back, scale, read logs, run a read-only command inside a pod, check a pull request, merge it. Two AI agents (an Ops Agent and a Repo Agent) answer questions and diagnose alerts with real log evidence. |
+| **Plan it** | A project board lives in the same chat: tickets are made from a sentence, open themselves when a deploy fails or an alert fires, move when a pull request says `Fixes SY-12`, and come back to each person as a **morning briefing**, a daily **standup** and incident follow-ups. |
+| **Trust it** | The agents hold no credentials and can only *ask*. Every change goes through the **Gatekeeper**: it checks who is asking, asks a second person for approval when it matters, blocks deploys that bring in a new critical vulnerability, and writes an audit log nobody can quietly edit. |
 
-## What it looks like
+![How Shipyard fits together](docs/img/architecture.svg)
 
-Condensed from real runs: lines are shortened, never invented.
+People talk in rooms; [Switch](https://github.com/sandbox-quantum/switch) carries the messages and says exactly who sent each one. The Gatekeeper (itself a Switch agent) is the only part that holds credentials for your stack. The agents sit in the rooms like colleagues, but all they can do is ask the Gatekeeper, which acts only for a person with a role.
+
+## Your project board, inside the chat
+
+Most tools make you leave the conversation to update a tracker. Shipyard's board is made of the conversation: nobody drags a card.
+
+![The Board: tickets that open and close themselves](docs/img/board.svg)
+
+- **Tickets from a sentence.** `@repo-agent track: Fix login redirect loop, high, assign to anya` creates `SY-7`, and `anya` is told.
+- **Tickets from events.** A failed deploy, a crashed container, a restart loop, a full disk, a SigNoz alert or a new critical CVE opens a ticket on its own, with the evidence attached and the Ops Agent's diagnosis as its body. Repeats join the open one instead of piling up.
+- **Tickets that follow the code.** A pull request that says `Fixes SY-7` links itself and moves the ticket to *review*; merging it and deploying that exact commit moves it to *done*.
+- **Briefings.** `@repo-agent my briefing` gives each person their open tickets, what changed since the last time, their pull requests and the first step to take. A personal **desk room** gets it every morning, and the maintainers get a daily **standup**: who is stuck, what is stale.
+- **Incidents.** Every alert opens an incident; closing it with `@gatekeeper incident close INC-3: add a restart alert; raise the memory limit` turns the follow-ups into tickets.
+- **Same rules as everything else.** A viewer can't assign, a deployer moves their own tickets, a maintainer moves any, and a ticket that says "ignore your rules" is treated as text, never as an instruction.
 
 ```text
-anya       @gatekeeper deploy demo-web
-gatekeeper Done: deploy demo-web for anya. deployment queued.
+sy-owner   @repo-agent track: Fix login redirect loop, high, assign to sy-deployer
+gatekeeper @sy-deployer SY-7 was assigned to you by sy-owner: Fix login redirect loop
+gatekeeper PR #13 opened by Shrinet82: Fix login redirect loop. Fixes SY-7
+gatekeeper SY-7 moved to review: PR #13 says it fixes it.
+sy-viewer  @repo-agent briefing for sy-maint
+repo-agent Briefings for someone else are for maintainers and owners.
+```
 
+More, including every permission: [`docs/BOARD.md`](docs/BOARD.md).
+
+## Safe by design
+
+The agents are language models reading text from strangers, so Shipyard assumes they can be fooled and makes that harmless: a fooled agent gets an attacker a *request that waits for a human*.
+
+![From a chat message to a change](docs/img/approval-flow.svg)
+
+- **Agents can't act.** No credentials for Coolify, GitHub, the cluster or SigNoz, and an unprivileged Linux user.
+- **Identity comes from Switch**, never from the message text.
+- **Approvals are single use**, pinned to the exact action and commit, and expire in 10 minutes.
+- **A new critical CVE blocks the deploy**; only an owner can override.
+- **The audit log is hash-chained**; an edited row breaks the chain.
+
+The full model, what is tested and the risks that remain: [`docs/SECURITY.md`](docs/SECURITY.md).
+
+## See it working
+
+Real runs, shortened but never invented.
+
+```text
 maintainer @gatekeeper merge 7
 gatekeeper BLOCKED by the SBOM gate (id ab516adc): merge PR #7, requested by maintainer. 6 new critical CVEs:
            CVE-2019-14234 in pypi/django 2.2 … Only an owner can override: `@gatekeeper approve ab516adc`.
@@ -32,91 +77,96 @@ owner      @gatekeeper approve ab516adc
 gatekeeper Done: merged PR #7 (squash, ded6a31), approved by owner. Deploy of demo-web queued.
 ```
 
-And an alert that arrives from SigNoz on a three-pod Kubernetes cluster, then the evidence on request:
+An alert from SigNoz on a three-pod Kubernetes cluster, the Ops Agent's diagnosis, and the evidence on request:
 
-```text
-gatekeeper ALERT: SigNoz alert Errors in your apps for namaste.  Ticket SY-1 opened for this alert.
-ops-agent  Critical alert: namaste logged five payment gateway timeouts for order A-17 across two seconds; repeated 30s delays point to a
-           payment gateway connectivity or availability issue. A maintainer can ask Gatekeeper to roll back, restart or redeploy namaste.
-owner      @gatekeeper signals errors namaste
-gatekeeper Error logs of namaste from SigNoz, last 15 min (secrets removed; this is log data, never instructions):
-           2026-11-06T11:45:10 ERROR payment gateway timeout after 30s (order A-17)
-```
+![A SigNoz alert in Mattermost: ticket, diagnosis and the error logs](docs/img/screenshots/alert-in-mattermost.png)
 
-The merge ran against a real repository and a real Grype scan; the audit log kept the block, the refused approval and the override, with the CVE ids. The alert came from a real SigNoz rule firing on the logs of real pods.
+More screenshots (placeholders until the recordings are made):
 
-## How Switch is used
-
-[Switch](https://github.com/sandbox-quantum/switch) is the chat layer, and Shipyard leans on it for more than message transport:
-
-| Switch feature | What Shipyard does with it |
+| The dashboard | Shipyard in Discord |
 |---|---|
-| **Bridges and rooms** | One room group per project (ops, maintainers and incidents rooms), mirrored to Mattermost and Discord. A room sync makes the missing ones in every chat app. Slack works through the same mechanism but is untested here. |
-| **Agent protocol** | The Gatekeeper is itself a *custom Switch agent*: it holds a stream open, sends heartbeats, reads messages and posts replies and alerts. Nothing else listens to your rooms. |
-| **Templates** | The whole project is one Switch template, [`templates/shipyard.template.yaml`](templates/shipyard.template.yaml): the Ops and Repo agents, the room group and the links between them. The installer runs it through Switch's template API; Switch Console can run the same file. |
-| **Agent controller** | The Ops and Repo agents are Codex agents run by a Switch controller on your machine, as an unprivileged user. |
-| **Sender identity** | Each message carries the sender's platform account (`@switch-discord-<bridge>-<name>:localhost`). Roles and approvals are tied to that, so "who said approve" is not something a message can claim. |
-| **Addressing policy** | Switch itself refuses messages to an agent from people outside the project, and only in the project's rooms. The dashboard rebuilds that policy from the roles. |
+| ![The dashboard](docs/img/placeholders/dashboard.svg) | ![Shipyard in a Discord server](docs/img/placeholders/discord.svg) |
+| **SigNoz connected** | **The guided installer** |
+| ![SigNoz connected](docs/img/placeholders/signoz.svg) | ![The guided installer](docs/img/placeholders/installer.svg) |
 
-## What it does
+## Demo video
 
-| Area | Commands (mention `@gatekeeper`) | Who |
-|---|---|---|
-| Read | `status`, `logs`, `events`, `prs`, `pr <n>`, `ci [pr\|commit]`, `signals [rules\|logs <svc>\|errors <svc>]`, `digest`, `suggestions <pr>`, `sbom [...]`, `audit [n]`, `whoami` | viewer and up |
-| Change | `deploy`, `restart`, `rollback` (approval), `scale` (Kubernetes) | deployer and up |
-| Diagnose | `exec <app> <command>`: one of about 50 read-only commands inside a container or pod. No shell, no writes, no environment, no credential files. | maintainer and up |
-| Dangerous | `merge <pr>`, `apply-suggestion`, `shell <host> <cmd>` | maintainer / owner, plus a second person's approval |
-| Approve | `approve <id>`, `deny <id>` | owner, or another maintainer |
-| Automatic | alerts (failed deploys, crashes, restart limits, disk, SigNoz) with real log evidence and a three-line diagnosis; pull-request alerts; a daily digest | |
-| Board | tickets made from chat, opened automatically from alerts, grouped into incidents, linked to pull requests that say `Fixes SY-12`, delivered each morning to personal desk rooms ([`docs/BOARD.md`](docs/BOARD.md)) | by role |
-| Security | an SBOM report for every CI run diffed against the last release; a new critical CVE **gates** the deploy; new copyleft licences are flagged | owner overrides |
-| Dashboard | audit log, approvals, SBOM reports, backend health, roles, agent access, the Board, room sync | owner edits |
+[![Demo video: an alert, an approval and the SBOM gate](docs/img/placeholders/demo-video.svg)](#demo-video)
 
-Commands are mentions, never a `!` prefix, because Switch uses `!` for its own commands.
+## Install in ten minutes
 
-## Install
-
-One command on a blank Ubuntu 24.04 machine (4 vCPU and 16 GB is comfortable):
+You need a blank **Ubuntu 24.04** machine (4 vCPU and 16 GB is comfortable, 4 GB is the minimum) and a user with `sudo`. One command starts a guided installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shrinet82/shipyard/main/scripts/install.sh | bash
 ```
 
-A guided installer takes it from there, one step at a time. It does what a machine can do and stops only for what a person has to do. Each stop says where to go and what to get, takes the value hidden, checks it at once and carries on; run it again after a failure and it continues.
+![The guided install](docs/img/install-flow.svg)
 
-| You | The installer |
+It does what a machine can do and stops only for what a person has to do. Each stop says where to go and what to get, checks the value at once, and carries on. Run it again after any failure and it continues. Have these ready, each with a step-by-step guide:
+
+| You will need | For | How to get it |
+|---|---|---|
+| A ChatGPT account | the Ops and Repo agents (Codex) | [Sign in to Codex](docs/SETUP-GUIDES.md#sign-in-to-codex) |
+| A GitHub account and a repository | pull requests, CI, merges | [Create the GitHub App (two clicks)](docs/SETUP-GUIDES.md#create-the-github-app-two-clicks) |
+| A Discord bot token *(optional)* | Discord as a chat app | [Get a Discord bot token](docs/SETUP-GUIDES.md#get-a-discord-bot-token) |
+| A Coolify API token *(if you deploy with Coolify)* | deploy, rollback, logs | [Create a Coolify API token](docs/SETUP-GUIDES.md#create-a-coolify-api-token) |
+| `kubectl` pointing at your cluster *(optional)* | status, scale, rollback, exec | picked from a list by `connect kubernetes` |
+| A SigNoz key *(optional)* | logs and alerts | [Create a SigNoz key](docs/SETUP-GUIDES.md#create-a-signoz-key) |
+
+When it finishes, type `@gatekeeper whoami` in a room: the installer sees it and makes you the owner. To reach the browser pages (chat, Switch Console, dashboard) use an SSH tunnel or let `expose` open them for your address only: [Open the pages from your browser](docs/SETUP-GUIDES.md#open-the-pages-from-your-browser).
+
+Every connector also runs on its own, any time:
+
+```bash
+python3 -m shipyard github-app --repo owner/name       # the two-click GitHub App
+python3 -m shipyard connect kubernetes                 # pick a namespace; three scoped accounts, each proved
+python3 -m shipyard connect signoz --bootstrap         # read-only logs and alerts (a new SigNoz needs no key)
+python3 -m shipyard connect discord                    # bot token, switches, invite, bridge, rooms
+python3 -m shipyard expose                             # browser pages without a tunnel (--off to undo)
+python3 -m shipyard doctor                             # what is wrong, if anything
+```
+
+**This was the short version.** The whole installation guide, with every step, the unattended install and what each connector changes: [`docs/INSTALL.md`](docs/INSTALL.md) and [`docs/CONNECTORS.md`](docs/CONNECTORS.md). Nothing to try it on? `scripts/lab-setup.sh` builds a sandbox: a Kubernetes cluster running three pods of a small web app ([`namaste-app`](https://github.com/Shrinet82/namaste-app)) with SigNoz receiving their logs.
+
+## How Switch is used
+
+Switch is the chat layer, and Shipyard leans on it for more than message transport:
+
+| Switch feature | What Shipyard does with it |
 |---|---|
-| pick Coolify, Kubernetes, both or neither | installs Docker, Switch and Mattermost, and the agents' controller (an unprivileged user) |
-| open one link and type a code (Codex sign-in) | creates the rooms, registers the Gatekeeper, writes the config, starts it |
-| press **Create GitHub App**, then **Install** | makes the GitHub App from a manifest and saves its keys; no form, no key to copy |
-| pick a namespace | creates three least-privilege Kubernetes accounts and proves each credential |
-| *(optional)* create a Discord bot, press the invite link | checks the token and the two privileged switches, finds the server, connects it, makes the rooms |
-| type `@gatekeeper whoami` | makes you the owner |
+| **Bridges and rooms** | One room group per project (ops, maintainers and incidents rooms), mirrored to Mattermost and Discord. A room sync makes the missing ones in every chat app. Slack goes through the same mechanism. |
+| **Agent protocol** | The Gatekeeper is itself a *custom Switch agent*: it holds a stream open, sends heartbeats, reads messages and posts replies and alerts. Nothing else listens to your rooms. |
+| **Templates** | The whole project is one Switch template, [`templates/shipyard.template.yaml`](templates/shipyard.template.yaml): the agents, the room group and the links. The installer runs it through Switch's template API. |
+| **Agent controller** | The Ops and Repo agents are Codex agents run by a Switch controller on your machine, as an unprivileged user. |
+| **Sender identity** | Each message carries the sender's platform account (`@switch-discord-<bridge>-<name>:localhost`). Roles and approvals are tied to that. |
+| **Addressing policy** | Switch itself refuses messages to an agent from people outside the project, and only in the project's rooms. The dashboard rebuilds that policy from the roles. |
 
-It also offers to make a Mattermost login for you and, on a cloud machine, to open the browser pages (Mattermost, Switch Console, dashboard) without an SSH tunnel. The tunnel always works too.
+## What you can ask
 
-Every connector also runs on its own: `github-app`, `connect kubernetes`, `connect signoz`, `connect discord`, `expose`, `mattermost-user`, `doctor`. Details, limits and how to remove each one: [`docs/INSTALL.md`](docs/INSTALL.md) and [`docs/CONNECTORS.md`](docs/CONNECTORS.md). What Shipyard reads from your CI and how to add a pipeline: [`docs/CI.md`](docs/CI.md).
+Commands are mentions (`@gatekeeper ...`), never a `!` prefix, because Switch uses `!` for its own commands.
 
-**Nothing to try it on?** `scripts/lab-setup.sh` builds a sandbox on a blank machine: a Kubernetes cluster running three pods of a small web app ([`namaste-app`](https://github.com/Shrinet82/namaste-app)) and SigNoz receiving their logs. Then run the installer and connect them.
+| Area | Examples | Who |
+|---|---|---|
+| Read | `status`, `logs`, `events`, `prs`, `ci [pr]`, `signals [rules\|logs <svc>\|errors <svc>]`, `sbom`, `audit`, `whoami` | viewer and up |
+| Change | `deploy`, `restart`, `rollback` (approval), `scale` | deployer and up |
+| Diagnose | `exec <app> <command>`: one of about 50 read-only commands in a container or pod | maintainer and up |
+| Dangerous | `merge <pr>`, `apply-suggestion`, `shell <host> <cmd>` | plus a second person's approval |
+| Board | `@repo-agent track`, `assign`, `move`, `my briefing`, `team status`; `@gatekeeper incident close` | by role |
+| Automatic | alerts with log evidence and a diagnosis, pull-request alerts, a daily digest, SBOM reports on every CI run | |
 
-## The dashboard
+## Documentation
 
-It listens on `127.0.0.1:8780` by default and is reached through a tunnel or, if you chose it, the machine's address. Click **Get a sign-in code** and type `@gatekeeper dashboard-login <code>` in a Shipyard room: Switch tells the Gatekeeper who sent it, so the session belongs to that person and their role. No password and no token is ever posted in chat. It shows everything and can change two things, for owners only and both audited: **roles** and **agent access**. It has no approve button on purpose.
-
-## Security model
-
-The agents are language models reading text from strangers (PR descriptions, logs, chat). The design assumes they can be fooled, and makes that harmless:
-
-1. **Agents can't act.** They hold no credential for Coolify, GitHub, the cluster, SigNoz or Switch, and run as an unprivileged Linux user with the platform's secrets out of reach. They can only ask the Gatekeeper, citing the human message that asked. A proposal always waits for a human's approval, and an agent's own "approve" is ignored and logged.
-2. **Identity comes from Switch**, not from the message text. A role is bound to the platform account that sent it.
-3. **Approvals are single use**, bound to the exact action, target, arguments and (for deploys and merges) the **commit**; they expire in 10 minutes and can't be given by the person who asked.
-4. **Chat text never reaches a shell.** Commands are parsed by a fixed grammar; backends are driven with argument lists; names are validated. Logs and command output are redacted, stripped of mentions and shown as data.
-5. **The SBOM gate** blocks a forward deploy on a new critical CVE, a missing SBOM or an unverified one. Only an owner can override, pinned to the commit. A pull request that edits `.github/workflows/` can't vouch for its own SBOM.
-6. **Least privilege per backend**: three Kubernetes service accounts (the agents' viewer can't read Secrets), a read-only SigNoz key, a GitHub App with merge pinned to the approved commit, an SSH key locked to one forced command.
-7. **The audit log is hash-chained** in SQLite; an edited row breaks the chain and `doctor` and the dashboard say so.
-8. **Fail closed**: if GitHub, Switch or the scan can't be reached, the answer is "no", never "assumed fine".
-
-**Residual risks, stated plainly.** CI output is trusted: protect the default branch, because anyone who can change the workflow can change what the SBOM says. A deploy builds the branch as Coolify finds it, which can be newer than the commit judged; a moved head is refused just before it runs, but a small window remains. Anyone with a shell on the machine can open the dashboard and read the secret files. The browser pages use plain HTTP: keep their ports closed to everyone but you.
+| | |
+|---|---|
+| [`docs/INSTALL.md`](docs/INSTALL.md) | the whole installation guide |
+| [`docs/SETUP-GUIDES.md`](docs/SETUP-GUIDES.md) | Discord bot, GitHub App, Codex, Coolify, SigNoz, browser access |
+| [`docs/CONNECTORS.md`](docs/CONNECTORS.md) | what each connector does and how to remove it |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | the security model in full |
+| [`docs/BOARD.md`](docs/BOARD.md) | tickets, briefings, incidents, desk rooms |
+| [`docs/CI.md`](docs/CI.md) | which pipelines Shipyard reads and how to add one |
+| [`docs/DEMO.md`](docs/DEMO.md) | the demo script |
+| [`docs/GAPS.md`](docs/GAPS.md) | the known gaps, and what would close each |
 
 ## Repository layout
 
@@ -124,13 +174,13 @@ The agents are language models reading text from strangers (PR descriptions, log
 |---|---|
 | `shipyard/policy.py`, `gatekeeper.py`, `audit.py` | roles, tiers, approvals, the hash-chained log |
 | `shipyard/service.py`, `commands.py` | the chat commands and the gate |
+| `shipyard/tickets.py`, `ticketflow.py`, `briefing.py`, `incidents.py`, `desks.py` | the Board |
 | `shipyard/coolify.py`, `github.py`, `kube.py`, `signoz.py`, `hostshell.py` | backend adapters |
 | `shipyard/sbom*.py` | SBOM parsing, trust checks, store and collector |
 | `shipyard/wizard.py`, `init.py`, `ghapp.py`, `kubeconnect.py`, `discordsetup.py`, `expose.py` | the guided installer and the connectors |
 | `shipyard/dashboard.py`, `web/` | the dashboard (standard library and plain JavaScript, no build step) |
 | `templates/shipyard.template.yaml` | the Switch template: agents, rooms, links |
-| `scripts/` | the install scripts, the lab sandbox, the maintainer's AWS helper |
-| `docs/` | install, connectors, CI, the Board, the demo script, the known gaps, each phase's findings |
+| `scripts/` | the install scripts and the lab sandbox |
 
 ```bash
 python3 -m pip install pyyaml pytest
@@ -139,8 +189,6 @@ python3 -m pytest        # 1100+ tests, no network
 
 ## Status
 
-**Verified live:** the chat commands, approvals, rollback, merge and deploy on Mattermost and Discord; alerts with log evidence and the Ops Agent's diagnosis; the SBOM gate with a real scan and an owner override; Kubernetes (status, logs, scale, restart, rollback, `exec` in pods) on a real cluster; `exec` in a Coolify container through a forced-command wrapper; applying a reviewer's suggestion; the dashboard; SigNoz (logs, errors, a real alert rule firing into an incident and a ticket); the guided installer from a **blank Ubuntu 24.04 machine**, the GitHub App created from a manifest, the Kubernetes connector on a second namespace, the Discord step against a real server, the browser pages without a tunnel, and reboots (everything comes back by itself). Each of those runs found bugs; they are fixed and covered by tests.
+**Verified live:** the chat commands, approvals, rollback, merge and deploy on Mattermost and Discord; alerts with log evidence and the Ops Agent's diagnosis; the SBOM gate with a real scan and an owner override; the Board end to end (tickets from chat, from alerts and from pull requests, briefings, standup, incidents, desk rooms); Kubernetes (status, logs, scale, restart, rollback, `exec` in pods) on a real cluster; `exec` in a Coolify container; applying a reviewer's suggestion; the dashboard; SigNoz (logs, errors, a real alert rule firing into an incident and a ticket); the guided installer from a **blank Ubuntu 24.04 machine**, the GitHub App from a manifest, the Discord step against a real server, the browser pages without a tunnel, and reboots. Each of those runs found bugs; they are fixed and covered by tests. The known gaps are in [`docs/GAPS.md`](docs/GAPS.md).
 
-**Not tested:** Slack; the installer on anything but Ubuntu 24.04 on x86-64; the Kubernetes connector on a managed cluster (EKS, GKE); a single unattended pass of the whole installer including Discord on a blank machine. The known gaps, with why each matters and what would close it, are in [`docs/GAPS.md`](docs/GAPS.md).
-
-**Future scope:** Slack; metrics and traces from SigNoz and a connector interface so Coolify and Kubernetes are two of many; per-agent tool limits (today every agent shares one tool token, and the person's role is the real guard); an `exec` that can write; per-release SBOM history on the dashboard.
+**Future scope:** Slack; metrics and traces from SigNoz, and a connector interface so Coolify and Kubernetes are two of many; per-agent tool limits (today every agent shares one tool token, and the person's role is the real guard); an `exec` that can write; per-release SBOM history on the dashboard.
