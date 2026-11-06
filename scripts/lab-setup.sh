@@ -5,6 +5,7 @@
 set -euo pipefail
 APP_REPO=${APP_REPO:-https://github.com/Shrinet82/namaste-app}
 APP_DIR=${APP_DIR:-$HOME/namaste-app}
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 step() { printf '\n== %s\n' "$*"; }
 
 step "1/5 Docker, kubectl, k3d"
@@ -51,7 +52,7 @@ for _ in $(seq 1 90); do curl -fs http://localhost:8080/api/v2/healthz >/dev/nul
 curl -fs http://localhost:8080/api/v2/healthz >/dev/null || { echo "SigNoz did not come up; check: cd ~/signoz/pours/deployment && sudo docker compose ps"; exit 1; }
 
 step "5/5 Some traffic, so there are logs to look at"
-bash "$(dirname "${BASH_SOURCE[0]}")/lab-traffic.sh" ok 20 || true
+bash "$HERE/lab-traffic.sh" ok 20 || true
 
 cat <<MSG
 
