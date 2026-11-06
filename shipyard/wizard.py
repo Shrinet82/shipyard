@@ -147,17 +147,24 @@ class Wizard:
         except InitError as exc:
             raise WizardError(str(exc)) from None
 
-    def connect(self, what: str) -> None:
-        cmd = [self.python, "-m", "shipyard", "connect", what, "--config", str(self.home / "shipyard.yaml")]
-        if self.stream(cmd) != 0:
+    def connect(self, what: str, *extra: str) -> bool:
+        cmd = [self.python, "-m", "shipyard", "connect", what, "--config", str(self.home / "shipyard.yaml"), *extra]
+        if self.stream(cmd) == 0:
+            return True
+        if not extra:
             self.say(f"   connecting {what} did not finish; run it again any time: python3 -m shipyard connect {what}")
+        return False
 
     def optional_connectors(self) -> None:
         if self.target["kubernetes"]:
             self.say("   Needs kubectl on this machine pointing at your cluster with admin rights (used once, never stored).")
             self.connect("kubernetes")
         if self.yes("   Connect SigNoz (read-only alerts and logs)?", "no"):
-            self.connect("signoz")
+            # first let Shipyard make SigNoz's read-only key itself (a new SigNoz, or one it set up before); if that is not possible, ask for a key
+            self.say("   I will try to create the read-only key in SigNoz for you.")
+            if not self.connect("signoz", "--url", "http://localhost:8080", "--bootstrap"):
+                self.say("   That did not work (SigNoz already has an admin of its own, or is elsewhere). Paste a Viewer key instead.")
+                self.connect("signoz")
 
     def finish(self) -> bool:
         ok = self.run_doctor(self.home / "shipyard.yaml", say=self.say)

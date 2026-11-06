@@ -116,6 +116,7 @@ def test_kubernetes_choice_runs_the_connector_after_shipyard_and_signoz_is_offer
     assert w.run() is True
     connects = [a[4:5] for a in m.streamed if a[1:4] == ["-m", "shipyard", "connect"]]
     assert connects == [["kubernetes"], ["signoz"]]
+    assert "--bootstrap" in [a for a in m.streamed if a[4:5] == ["signoz"]][0]
     assert all("--config" in a for a in m.streamed if a[1:4] == ["-m", "shipyard", "connect"])
 
 
@@ -136,3 +137,18 @@ def test_a_sudo_that_wants_a_password_is_asked_once_up_front(tmp_path):
     (tmp_path / "shipyard.yaml").write_text("x")
     wizard(tmp_path, m2).run()
     assert ["sudo", "-v"] not in m2.streamed
+
+
+def test_signoz_falls_back_to_asking_for_a_key_when_the_automatic_key_fails(tmp_path):
+    m = Machine()
+    real = m.stream
+    def failing_bootstrap(argv):
+        if "--bootstrap" in argv:
+            m.streamed.append(argv)
+            return 1
+        return real(argv)
+    m.stream = failing_bootstrap
+    w = wizard(tmp_path, m, replies=["1", "yes", "yes"])
+    assert w.run() is True
+    signoz_calls = [a for a in m.streamed if a[4:5] == ["signoz"]]
+    assert ["--bootstrap" in a for a in signoz_calls] == [True, False] and any("Paste a Viewer key" in s for s in w.said)
