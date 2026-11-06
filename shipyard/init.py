@@ -252,7 +252,8 @@ class Installer:
         repo = self.get("github.repo", "Repository the App should work on, owner/name", required=True)
         org = self.get("github.org", "GitHub organisation that owns the App (blank for your own account)", "")
         try:
-            return self.app_creator(self.home, repo, org=org, port=int(self.get("github.port", "Local port for the setup page", "8767")), say=self.say)
+            host = self.get("github.public_host", "Address your browser uses to reach this machine, for the setup page (blank: localhost, through an SSH tunnel)", "")
+            return self.app_creator(self.home, repo, org=org, port=int(self.get("github.port", "Local port for the setup page", "8767")), say=self.say, public_host=host)
         except Exception as exc:
             raise InitError(f"creating the GitHub App failed: {exc}") from None
 

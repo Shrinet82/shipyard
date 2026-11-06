@@ -55,12 +55,27 @@ case "${1:-status}" in
           i=$(ids); [ -z "$i" ] || { aws ec2 terminate-instances --instance-ids $i >/dev/null; aws ec2 wait instance-terminated --instance-ids $i; }
           sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$SG_NAME --query 'SecurityGroups[0].GroupId' --output text)
           [ "$sg" = None ] || aws ec2 delete-security-group --group-id "$sg"; echo "$ENVNAME deleted" ;;
-  myip)   sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$SG_NAME --query 'SecurityGroups[0].GroupId' --output text)
+  open)   # let YOUR current address (and nobody else) reach these ports of the machine, e.g.  vm.sh open 8080 8065
+          [ $# -ge 2 ] || { echo "usage: $0 open <port> [port...]"; exit 2; }; shift
+          sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$SG_NAME --query 'SecurityGroups[0].GroupId' --output text)
           me=$(curl -s https://checkip.amazonaws.com)/32
-          for port in 22 8000; do
-            old=$(aws ec2 describe-security-groups --group-ids "$sg" --query "SecurityGroups[0].IpPermissions[?FromPort==\`$port\`].IpRanges[].CidrIp" --output text)
-            for c in $old; do aws ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr "$c" >/dev/null; done
-            aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port $port --cidr "$me" >/dev/null
-          done; echo "ports 22 and 8000 now open to $me only" ;;
-  *) echo "usage: $0 status|start|stop|ssh build|coolify [cmd]|put <local> <remote>|myip|create|destroy|tunnel [mattermost] [switch] [signoz] [github]"; exit 2 ;;
+          for port in "$@"; do [[ "$port" =~ ^[0-9]{2,5}$ ]] || { echo "bad port $port"; exit 2; }
+            aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port "$port" --cidr "$me" >/dev/null 2>&1 || true
+            echo "port $port open to $me only"; done ;;
+  close)  # take those ports away again
+          [ $# -ge 2 ] || { echo "usage: $0 close <port> [port...]"; exit 2; }; shift
+          sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$SG_NAME --query 'SecurityGroups[0].GroupId' --output text)
+          for port in "$@"; do
+            for c in $(aws ec2 describe-security-groups --group-ids "$sg" --query "SecurityGroups[0].IpPermissions[?FromPort==\`$port\`].IpRanges[].CidrIp" --output text); do
+              aws ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port "$port" --cidr "$c" >/dev/null; done
+            echo "port $port closed"; done ;;
+  myip)   # your address changed: move every port that was open to you (SSH included) to the new one
+          sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$SG_NAME --query 'SecurityGroups[0].GroupId' --output text)
+          me=$(curl -s https://checkip.amazonaws.com)/32
+          for port in $(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions[?IpRanges[0].CidrIp!=`null`].FromPort' --output text); do
+            for c in $(aws ec2 describe-security-groups --group-ids "$sg" --query "SecurityGroups[0].IpPermissions[?FromPort==\`$port\`].IpRanges[].CidrIp" --output text); do
+              aws ec2 revoke-security-group-ingress --group-id "$sg" --protocol tcp --port "$port" --cidr "$c" >/dev/null; done
+            aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port "$port" --cidr "$me" >/dev/null
+            echo "port $port now open to $me only"; done ;;
+  *) echo "usage: $0 status|start|stop|ssh build|coolify [cmd]|put <local> <remote>|myip|open <port>...|close <port>...|create|destroy|tunnel [mattermost] [switch] [signoz] [github]"; exit 2 ;;
 esac

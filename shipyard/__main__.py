@@ -330,7 +330,7 @@ def _github_app(args: argparse.Namespace) -> None:
     from .ghapp import AppSetupError, create_app
     home = Path(expand(args.config)).parent
     try:
-        out = create_app(home, args.repo, org=args.org, port=args.port, webhook_url=args.webhook_url)
+        out = create_app(home, args.repo, org=args.org, port=args.port, webhook_url=args.webhook_url, public_host=args.public_host)
         edit_config(args.config, lambda raw: set_github(raw, args.project, app_id=out["app_id"], installation=out["installation"],
                                                          key_file=out["key_file"], repo=args.repo, deploy=args.deploy_app))
     except (AppSetupError, ConfigEditError) as exc:
@@ -384,6 +384,7 @@ def main() -> None:
     ga.add_argument("--port", type=int, default=8767, help="local port of the setup page")
     ga.add_argument("--project", default=None)
     ga.add_argument("--deploy-app", default=None, help="the application to deploy after a merge")
+    ga.add_argument("--public-host", default="", help="the address your browser uses to reach this machine, instead of an SSH tunnel to localhost (the page then listens on all interfaces while it runs)")
     ga.add_argument("--webhook-url", default="", help="a public webhook address for GitHub to call (default: webhooks off, Shipyard polls)")
     i = sub.add_parser("init", help="set Shipyard up on this machine (needs a running Switch)")
     i.add_argument("--answers", help="a YAML file of answers: no questions are asked")

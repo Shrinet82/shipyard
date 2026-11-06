@@ -127,3 +127,15 @@ def test_create_app_runs_the_whole_flow_and_returns_what_init_needs(tmp_path, mo
     out = create_app(tmp_path, "o/r", port=port, say=seen.append, check=lambda *a: "777", timeout=10)
     assert out["installation"] == "777" and out["app_id"] == "4242" and out["repo"] == "o/r"
     assert any(f"localhost:{port}" in l for l in seen) and any("installations/new" in l for l in seen)
+
+
+def test_a_public_host_changes_the_addresses_and_listens_on_all_interfaces_only_then(tmp_path):
+    local = AppSetup(tmp_path, port=8767)
+    assert local.start_url == "http://localhost:8767/" and local.bind == "127.0.0.1"
+    public = AppSetup(tmp_path, port=8767, public_host="13.126.17.66")
+    assert public.start_url == "http://13.126.17.66:8767/" and public.redirect_url == "http://13.126.17.66:8767/callback" and public.bind == "0.0.0.0"
+    assert "http://13.126.17.66:8767/callback" in public.handle("/")[1].replace("&quot;", '"').replace("\\/", "/")
+    for bad in ("evil.com/x", "a b", "http://x", "x;rm"):
+        with pytest.raises(AppSetupError):
+            AppSetup(tmp_path, public_host=bad)
+    assert public.handle("/callback?code=abcdefgh1234&state=wrong")[0] == 400                 # the state still guards it

@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 API = "https://api.github.com"
 ORG = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+HOST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 CODE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
 # the same permissions README lists: read CI and issues, write contents and pull requests (merge)
@@ -79,10 +80,15 @@ def _write_secret(path: Path, text: str) -> None:
 
 class AppSetup:
     def __init__(self, home: Path, *, org: str = "", port: int = 8767, webhook_url: str = "",
-                 http: Callable[..., tuple[int, Any]] = _http, say: Callable[[str], None] = print, name: str = ""):
+                 http: Callable[..., tuple[int, Any]] = _http, say: Callable[[str], None] = print, name: str = "", public_host: str = ""):
         if org and not ORG.match(org):
             raise AppSetupError(f"{org!r} is not a GitHub organisation name")
+        if public_host and not HOST.match(public_host):
+            raise AppSetupError(f"{public_host!r} is not a host name or address")
         self.home, self.org, self.port, self.webhook_url, self.http, self.say = home, org, port, webhook_url, http, say
+        # By default the page is reachable only from this machine (open it through an SSH tunnel). With a public host it listens on all interfaces, so
+        # your browser can reach it directly; keep the firewall open to you alone while it runs. The `state` and the one-time code still guard it.
+        self.host, self.bind = (public_host or "localhost"), ("0.0.0.0" if public_host else "127.0.0.1")
         self.name = name or f"Shipyard-{secrets.token_hex(2)}"
         self.state = secrets.token_urlsafe(24)
         self.result: dict[str, Any] | None = None
@@ -93,11 +99,11 @@ class AppSetup:
 
     @property
     def start_url(self) -> str:
-        return f"http://localhost:{self.port}/"
+        return f"http://{self.host}:{self.port}/"
 
     @property
     def redirect_url(self) -> str:
-        return f"http://localhost:{self.port}/callback"
+        return f"http://{self.host}:{self.port}/callback"
 
     @property
     def key_file(self) -> Path:
@@ -187,7 +193,7 @@ class AppSetup:
                 self.wfile.write(body)
 
         try:
-            server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+            server = ThreadingHTTPServer((self.bind, self.port), Handler)
         except OSError as exc:
             raise AppSetupError(f"port {self.port} is busy ({exc}); pick another with --port") from None
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -221,12 +227,12 @@ def wait_for_installation(check: Callable[[str, str, str], str], app_id: str, ke
 
 
 def create_app(home: Path, repo: str, *, org: str = "", port: int = 8767, webhook_url: str = "", say: Callable[[str], None] = print,
-               check: Callable[[str, str, str], str] | None = None, timeout: float = 900.0) -> dict[str, Any]:
+               check: Callable[[str, str, str], str] | None = None, timeout: float = 900.0, public_host: str = "") -> dict[str, Any]:
     """The whole flow for a terminal: print one address, wait for the clicks, return what `init` needs."""
     from .github import GitHubApp
     check = check or (lambda app_id, key, r: GitHubApp(app_id, key).installation_for(r))
-    setup = AppSetup(home, org=org, port=port, webhook_url=webhook_url, say=say)
-    say(f"  1. Open {setup.start_url} in your browser (on a remote machine first run: ssh -L {port}:localhost:{port} <this machine>).")
+    setup = AppSetup(home, org=org, port=port, webhook_url=webhook_url, say=say, public_host=public_host)
+    say(f"  1. Open {setup.start_url} in your browser" + ("." if public_host else f" (on a remote machine first run: ssh -L {port}:localhost:{port} <this machine>)."))
     say("  2. GitHub shows the App filled in: press 'Create GitHub App'. Keys are saved here automatically.")
     result = setup.serve(timeout)
     say(f"  App created ({result['slug']}). 3. Now install it on {repo}: {setup.install_url()}")
