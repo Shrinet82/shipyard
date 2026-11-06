@@ -162,27 +162,33 @@ def _plain(http: Callable[..., tuple[int, Any]], method: str, url: str, token: s
 
 
 def bootstrap(url: str, *, http: Callable[..., tuple[int, Any]] = _http, now: Callable[[], float] = time.time,
-              make_password: Callable[[], str] | None = None) -> dict[str, str]:
+              make_password: Callable[[], str] | None = None, login: tuple[str, str] | None = None) -> dict[str, str]:
     """For a SigNoz nobody has set up yet: create the admin account, then a Viewer service account with a one-year key.
     Returns the admin's login, a session token (for `create_alert`) and the read-only key."""
     import secrets
     url = url.rstrip("/")
     info = _plain(http, "GET", url + "/api/v1/version")
-    if info.get("setupCompleted"):
+    if info.get("setupCompleted") and not login:
         raise SigNozError("this SigNoz already has an admin. Create a Viewer service account and key in its settings, then run connect signoz without --bootstrap")
-    password = (make_password or (lambda: secrets.token_urlsafe(18) + "Aa1!"))()
-    email = "admin@shipyard.local"
-    _plain(http, "POST", url + "/api/v1/register", body={"name": "shipyard", "orgName": "shipyard", "email": email, "password": password})
+    if info.get("setupCompleted"):
+        email, password = login                                   # an admin made earlier by this tool: use it to make a new key
+    else:
+        password = (make_password or (lambda: secrets.token_urlsafe(18) + "Aa1!"))()
+        email = "admin@shipyard.local"
+        _plain(http, "POST", url + "/api/v1/register", body={"name": "shipyard", "orgName": "shipyard", "email": email, "password": password})
     from urllib.parse import quote
     ctx = _plain(http, "GET", f"{url}/api/v2/sessions/context?email={quote(email)}&ref={quote(url, safe='')}")
     org = ctx["data"]["orgs"][0]["id"]
     token = _plain(http, "POST", url + "/api/v2/sessions/email_password", body={"email": email, "password": password, "orgId": org})["data"]["accessToken"]
-    sa = _plain(http, "POST", url + "/api/v1/service_accounts", token, {"name": "shipyard-readonly"})["data"]["id"]
+    accounts = _plain(http, "GET", url + "/api/v1/service_accounts", token).get("data") or []
+    existing = next((a["id"] for a in accounts if a.get("name") == "shipyard-readonly"), None)
+    sa = existing or _plain(http, "POST", url + "/api/v1/service_accounts", token, {"name": "shipyard-readonly"})["data"]["id"]
     roles = _plain(http, "GET", url + "/api/v1/roles", token)["data"]
     viewer = next((r["id"] for r in roles if "viewer" in str(r.get("name", "")).lower()), None)
     if not viewer:
         raise SigNozError("SigNoz has no Viewer role")
-    _plain(http, "POST", url + "/api/v1/service_account_roles", token, {"roleId": viewer, "serviceAccountId": sa})
+    if not existing:
+        _plain(http, "POST", url + "/api/v1/service_account_roles", token, {"roleId": viewer, "serviceAccountId": sa})
     key = _plain(http, "POST", f"{url}/api/v1/service_accounts/{sa}/keys", token, {"name": "shipyard", "expiresAt": int(now() + 365 * 86400)})["data"]["key"]
     return {"admin_email": email, "admin_password": password, "token": token, "key": key}
 

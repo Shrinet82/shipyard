@@ -184,6 +184,7 @@ class FreshSigNoz:
             ("GET", "/api/v1/version"): {"version": "v0.149.0", "setupCompleted": self.set_up},
             ("POST", "/api/v1/register"): {"status": "success", "data": {"id": "u1"}},
             ("POST", "/api/v2/sessions/email_password"): {"data": {"accessToken": "tok-1"}},
+            ("GET", "/api/v1/service_accounts"): {"data": []},
             ("POST", "/api/v1/service_accounts"): {"data": {"id": "sa-1"}},
             ("GET", "/api/v1/roles"): {"data": [{"id": "r-admin", "name": "signoz-admin"}, {"id": "r-viewer", "name": "signoz-viewer"}]},
             ("POST", "/api/v1/service_account_roles"): {"data": {"id": "x"}},
@@ -230,3 +231,18 @@ def test_create_alert_makes_the_channel_that_calls_shipyard_and_a_rule_that_uses
     spec = rule["condition"]["compositeQuery"]["queries"][0]["spec"]
     assert rule["preferredChannels"] == ["shipyard"] and spec["signal"] == "logs" and "ERROR" in spec["filter"]["expression"]
     assert spec["groupBy"][0]["name"] == "service.name" and rule["condition"]["target"] == 0
+
+
+def test_bootstrap_reuses_an_admin_made_earlier_and_does_not_duplicate_the_service_account():
+    from shipyard.signoz import bootstrap
+    h = FreshSigNoz(set_up=True)
+    base = h.__call__
+
+    def with_accounts(method, url, headers=None, body=None, timeout=20.0):
+        if method == "GET" and url.endswith("/api/v1/service_accounts"):
+            return 200, {"data": [{"id": "sa-1", "name": "shipyard-readonly"}]}
+        return base(method, url, headers, body, timeout)
+    out = bootstrap("http://sz:8080", http=with_accounts, login=("admin@shipyard.local", "kept-pw"))
+    assert out["key"] == "the-viewer-key" and out["admin_password"] == "kept-pw"
+    made = [(c[0], c[1]) for c in h.calls]
+    assert ("POST", "/api/v1/register") not in made and ("POST", "/api/v1/service_accounts") not in made and ("POST", "/api/v1/service_account_roles") not in made

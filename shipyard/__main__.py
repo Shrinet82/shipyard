@@ -259,12 +259,16 @@ def _connect_signoz(args: argparse.Namespace) -> None:
     key, boot = "", None
     if args.bootstrap:
         from .signoz import bootstrap
+        admin_file = Path(expand(args.config)).parent / "signoz-admin.env"
+        login = None
+        if admin_file.exists():                                  # a SigNoz this tool set up before: reuse its admin
+            vals = dict(l.strip().split("=", 1) for l in admin_file.read_text().splitlines() if "=" in l)
+            login = (vals.get("SIGNOZ_ADMIN_EMAIL", ""), vals.get("SIGNOZ_ADMIN_PASSWORD", ""))
         try:
-            boot = bootstrap(url)
+            boot = bootstrap(url, login=login)
         except SigNozError as exc:
             raise SystemExit(str(exc)) from None
         key = boot["key"]
-        admin_file = Path(expand(args.config)).parent / "signoz-admin.env"
         fd = os.open(admin_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(f"SIGNOZ_ADMIN_EMAIL={boot['admin_email']}\nSIGNOZ_ADMIN_PASSWORD={boot['admin_password']}\n")
