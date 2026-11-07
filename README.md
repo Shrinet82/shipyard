@@ -110,15 +110,20 @@ Anya is the owner, Rahul a maintainer, Meera a deployer and Dev a viewer. The Ga
 |---|---|---|
 | ![Overview](docs/img/screenshots/dashboard-overview.png) | ![Audit log, hash chain verified](docs/img/screenshots/dashboard-audit.png) | ![Roles](docs/img/screenshots/dashboard-roles.png) |
 
-### Still to come
+### Discord and the installer
 
-| Shipyard in a Discord server | The guided installer |
+| Same rules on Discord | The guided installer |
 |---|---|
-| ![Shipyard in a Discord server](docs/img/placeholders/discord.svg) | ![The guided installer](docs/img/placeholders/installer.svg) |
+| ![Discord: madlunatic82 asks to merge PR #2, shrinet82 approves from another account, the GitHub App merges](docs/img/screenshots/discord-merge-approval.png) | ![The installer's steps: check the machine, Switch and Mattermost, agents, rooms, GitHub App, connectors, say who you are](docs/img/screenshots/installer-steps.png) |
+| A maintainer on Discord asks to merge; the owner approves from a second account, and the GitHub App merges that commit. | One command; the installer stops only for what a person has to do (frame from the demo video). |
 
 ## Demo video
 
-[![Demo video: an alert, an approval and the SBOM gate](docs/img/placeholders/demo-video.svg)](#demo-video)
+[![Shipyard demo video (2:58), watch on YouTube](docs/img/demo-poster.png)](https://youtu.be/H22hWCuoNyQ)
+
+**[Watch on YouTube](https://youtu.be/H22hWCuoNyQ)** (2:58): how Shipyard uses Switch, then real footage from Mattermost, Discord, GitHub and SigNoz: roles, a cross-account approval on Discord, the SBOM gate, an incident and the audit chain.
+
+The build story is on Medium: [I gave a chat room the keys to production. Here's why it can't be talked into misusing them.](https://medium.com/@shashwat.pratap94550/i-gave-a-chat-room-the-keys-to-production-heres-why-it-can-t-be-talked-into-misusing-them-5e8f2ca25274)
 
 ## Install in ten minutes
 
